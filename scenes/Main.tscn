@@ -1,7 +1,8 @@
-[gd_scene load_steps=3 format=3]
+[gd_scene load_steps=4 format=3]
 
 [ext_resource type="Script" path="res://scripts/TerrainMesh.gd" id="1_mesh"]
 [ext_resource type="Script" path="res://scripts/CameraController3D.gd" id="2_cam"]
+[ext_resource type="Script" path="res://scripts/DayNightCycle.gd" id="3_day"]
 
 [node name="Main" type="Node3D"]
 
@@ -18,3 +19,6 @@ script = ExtResource("2_cam")
 [node name="Camera3D" type="Camera3D" parent="CameraRig"]
 current = true
 fov = 45.0
+
+[node name="DayNightCycle" type="Node3D" parent="."]
+script = ExtResource("3_day")
