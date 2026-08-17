@@ -1,0 +1,20 @@
+[gd_scene load_steps=3 format=3]
+
+[ext_resource type="Script" path="res://scripts/TerrainMesh.gd" id="1_mesh"]
+[ext_resource type="Script" path="res://scripts/CameraController3D.gd" id="2_cam"]
+
+[node name="Main" type="Node3D"]
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(0.7071068, -0.5, 0.5, 0, 0.7071068, 0.7071068, -0.7071068, -0.5, 0.5, 0, 12, 0)
+shadow_enabled = true
+
+[node name="Ground" type="MeshInstance3D" parent="."]
+script = ExtResource("1_mesh")
+
+[node name="CameraRig" type="Node3D" parent="."]
+script = ExtResource("2_cam")
+
+[node name="Camera3D" type="Camera3D" parent="CameraRig"]
+current = true
+fov = 45.0
