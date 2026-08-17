@@ -12,17 +12,17 @@ extends Node3D
 #   Q / E            -> rotar la vista
 
 @export var map_corner_min: Vector2 = Vector2(0.0, 0.0)
-@export var map_corner_max: Vector2 = Vector2(100.0, 100.0)
+@export var map_corner_max: Vector2 = Vector2(200.0, 200.0)
 
 const YAW_DEFAULT := 0.0
 const PITCH_DEFAULT := 55.0
 const PITCH_MIN := 12.0
 const PITCH_MAX := 82.0
 const ZOOM_MIN := 6.0
-const ZOOM_MAX := 100.0
+const ZOOM_MAX := 150.0
 const ZOOM_START := 20.0
-const ZOOM_STEP := 3.0
-const MOVE_SPEED := 26.0
+const ZOOM_STEP := 4.0
+const MOVE_SPEED := 40.0
 const ROTATE_SPEED := 1.6
 const ORBIT_SENSITIVITY := 0.006
 const BORDER := 2.0

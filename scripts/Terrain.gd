@@ -14,7 +14,8 @@ extends Node
 #
 # Al ser matematico, la resolucion es infinita: hacer zoom nunca da pixelado.
 
-const WORLD_SIZE := 100.0
+const WORLD_SIZE := 200.0
+const WORLD_SCALE := WORLD_SIZE / 100.0
 const WORK_RES := 512
 const SEED := 424242
 
@@ -35,14 +36,14 @@ const MASK_SMOOTH := 4            # blur de la mascara: elimina pozas pequenas
 
 # Relieve
 const WATER_DEPTH := 1.5          # profundidad del mar
-const WATER_RAMP_U := 4.0         # u.m. desde la costa hasta la profundidad normal
+const WATER_RAMP_U := 4.0 * WORLD_SCALE  # u.m. desde la costa hasta la profundidad normal
 const RAMP_MAX := 2.2             # altura de la meseta interior (llanura alta)
-const RAMP_DIST := 22.0           # u.m. desde la costa hasta la meseta interior
+const RAMP_DIST := 22.0 * WORLD_SCALE    # u.m. desde la costa hasta la meseta interior
 
 # Colinas
 const HILL_FREQ := 6.0
 const HILL_AMP := 0.4
-const HILL_FADE_U := 3.0          # u.m. para que las colinas aparezcan desde la costa
+const HILL_FADE_U := 3.0 * WORLD_SCALE   # u.m. para que las colinas aparezcan desde la costa
 
 # Montañas (crestas), solo en el interior profundo
 const MOUNT_FREQ := 3.5
@@ -54,10 +55,10 @@ const FOREST_FREQ := 7.0
 const FOREST_THRESHOLD := 0.08
 
 # Rios
-const RIVER_COUNT := 10
+const RIVER_COUNT := 14
 const RIVER_START_MIN := 0.8
 const RIVER_START_MAX := 4.2
-const RIVER_HALF_WIDTH_U := 1.5   # media anchura del cauce, en u.m.
+const RIVER_HALF_WIDTH_U := 1.5 * WORLD_SCALE  # media anchura del cauce, en u.m.
 const RIVER_CARVE := 0.9          # profundidad del cauce
 const RIVER_MAX_STEPS := 600
 
