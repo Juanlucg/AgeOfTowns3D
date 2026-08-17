@@ -101,12 +101,12 @@ func _apply_material() -> void:
 			vec3 land = C_BEACH;
 			float t_plains = smoothstep(0.28, 0.36, h);
 			land = mix(land, C_PLAINS, t_plains);
-			float t_rock = smoothstep(3.0, 3.15, h);
+			float t_rock = smoothstep(3.5, 3.65, h);
 			land = mix(land, C_ROCK, t_rock);
-			float t_snow = smoothstep(4.2, 4.35, h);
+			float t_snow = smoothstep(7.0, 7.15, h);
 			land = mix(land, C_SNOW, t_snow);
 			float plains_lo = smoothstep(0.36, 0.5, h);
-			float plains_hi = smoothstep(3.0, 2.8, h);
+			float plains_hi = smoothstep(3.5, 3.3, h);
 			float t_forest = plains_lo * plains_hi * smoothstep(0.06, 0.10, forest);
 			land = mix(land, C_FOREST, t_forest);
 

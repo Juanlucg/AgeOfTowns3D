@@ -22,8 +22,8 @@ const SEED := 424242
 # Nivel del mar y bandas de bioma
 const SEA_LEVEL := 0.0
 const BEACH_TOP := 0.28
-const ROCK_LEVEL := 3.0
-const SNOW_LEVEL := 4.2
+const ROCK_LEVEL := 3.5
+const SNOW_LEVEL := 7.0
 
 # Mascara tierra/mar (continente + océano alrededor)
 const CONTINENT_FREQ := 1.8
@@ -47,8 +47,12 @@ const HILL_FADE_U := 3.0 * WORLD_SCALE   # u.m. para que las colinas aparezcan d
 
 # Montañas (crestas), solo en el interior profundo
 const MOUNT_FREQ := 3.5
-const MOUNT_AMP := 2.2
+const MOUNT_BASE := 2.6
+const MOUNT_AMP := 8.0
 const MOUNT_RAMP_START := 2.0
+const RANGE_FREQ := 1.1
+const RANGE_SHARP := -0.1
+const RUGGED_FREQ := 2.2
 
 # Bosque (ruido de humedad)
 const FOREST_FREQ := 7.0
@@ -63,7 +67,7 @@ const RIVER_CARVE := 0.9          # profundidad del cauce
 const RIVER_MAX_STEPS := 600
 
 # Suavizado final del relieve
-const SMOOTH_RADIUS := 4
+const SMOOTH_RADIUS := 2
 
 # Clases de terreno (para consumo externo)
 const CLASS_WATER := 0
@@ -123,6 +127,16 @@ func _generate() -> void:
 	mount_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	mount_noise.frequency = MOUNT_FREQ
 
+	var range_noise := FastNoiseLite.new()
+	range_noise.seed = SEED + 6
+	range_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	range_noise.frequency = RANGE_FREQ
+
+	var rugged_noise := FastNoiseLite.new()
+	rugged_noise.seed = SEED + 7
+	rugged_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	rugged_noise.frequency = RUGGED_FREQ
+
 	var forest_noise := FastNoiseLite.new()
 	forest_noise.seed = SEED + 4
 	forest_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
@@ -168,15 +182,31 @@ func _generate() -> void:
 			var t := _smoothstep(clampf(d_land_u / WATER_RAMP_U, 0.0, 1.0))
 			heights[idx] = lerpf(0.0, -WATER_DEPTH, t)
 			continue
+		var nx := float(i) / float(_width)
+		var ny := float(j) / float(_height)
 		var d_u: float = coast_dist[idx] / _px_per_unit
 		var ramp := RAMP_MAX * clampf(d_u / RAMP_DIST, 0.0, 1.0)
 		var hills_w := _smoothstep(clampf(d_u / HILL_FADE_U, 0.0, 1.0))
-		var hills: float = hill_noise.get_noise_2d(float(i) / float(_width), float(j) / float(_height)) * HILL_AMP * hills_w
+		var hills: float = hill_noise.get_noise_2d(nx, ny) * HILL_AMP * hills_w
 		var m_mask := _smoothstep(clampf((ramp - MOUNT_RAMP_START) / (RAMP_MAX - MOUNT_RAMP_START), 0.0, 1.0))
-		var mr: float = mount_noise.get_noise_2d(float(i) / float(_width), float(j) / float(_height))
-		var ridge: float = 1.0 - absf(mr)
-		ridge *= ridge
-		var mtn: float = ridge * MOUNT_AMP * m_mask
+		# Cadenas de montaña: solo donde el ruido de cadenas supera el umbral,
+		# dejando valles y zonas llanas entre sierras.
+		var range_m := _smoothstep(clampf((range_noise.get_noise_2d(nx, ny) - RANGE_SHARP) / 0.5, 0.0, 1.0))
+		# Aspereza por zona: solo algunas cadenas desarrollan picos afilados,
+		# otras quedan como macizos suaves (variedad montañosa).
+		var rugged := _smoothstep(clampf((rugged_noise.get_noise_2d(nx, ny) + 0.1) / 0.5, 0.0, 1.0))
+		var ridge_amp := lerpf(0.35, 1.0, rugged)
+		# Cresta multifractal: varias octavas de (1-|noise|)^2 -> cumbres afiladas
+		# con estribaciones mas suaves alrededor.
+		var ridge_total := 0.0
+		var amp := 1.0
+		var freq := 1.0
+		for o in range(3):
+			var r := 1.0 - absf(mount_noise.get_noise_2d(nx * freq, ny * freq))
+			ridge_total += r * r * amp
+			amp *= 0.55
+			freq *= 2.3
+		var mtn: float = (MOUNT_BASE + ridge_total * MOUNT_AMP * ridge_amp) * range_m * m_mask
 		heights[idx] = ramp + hills + mtn
 
 	# --- Rios: trazado downhill y excavado del cauce ---
