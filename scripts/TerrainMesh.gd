@@ -4,7 +4,7 @@ extends MeshInstance3D
 # de cada bioma con smoothstep: transiciones infinitamente suaves y sin
 # resolucion de textura, nitidas a cualquier zoom.
 
-const CELL := 0.4
+const CELL := 0.3
 
 
 func _ready() -> void:
@@ -28,9 +28,13 @@ func _build_mesh() -> ArrayMesh:
 			var p := Vector2(x, y)
 			var h: float = Terrain.height_at(p)
 			var forest: float = Terrain.forest_at(p)
-			st.set_custom(0, Color(h, forest, 0.0, 0.0))
+			var wl: float = Terrain.water_level_at(p)
+			# Bajo el nivel local de agua (mar=0, lagos elevados): superficie
+			# plana a ese nivel (en CPU para que las normales queden correctas)
+			var surf_h := wl if h < wl else h
+			st.set_custom(0, Color(h, forest, 0.0, wl))
 			st.set_uv(Vector2(x / size, y / size))
-			st.add_vertex(Vector3(x, h, y))
+			st.add_vertex(Vector3(x, surf_h, y))
 
 	for j in range(steps):
 		for i in range(steps):
@@ -55,36 +59,12 @@ func _apply_material() -> void:
 		shader_type spatial;
 		render_mode cull_disabled;
 
-		uniform float noise_amp = 0.10;
-
-		const vec3 C_WATER_SHALLOW = vec3(0.20, 0.50, 0.72);
 		const vec3 C_WATER_DEEP = vec3(0.07, 0.22, 0.42);
 		const vec3 C_BEACH = vec3(0.85, 0.78, 0.55);
 		const vec3 C_PLAINS = vec3(0.42, 0.60, 0.30);
 		const vec3 C_FOREST = vec3(0.20, 0.38, 0.16);
 		const vec3 C_ROCK = vec3(0.48, 0.46, 0.42);
 		const vec3 C_SNOW = vec3(0.94, 0.95, 0.97);
-
-		float hash(vec2 p) {
-			p = fract(p * vec2(123.34, 456.21));
-			p += dot(p, p + 45.32);
-			return fract(p.x * p.y);
-		}
-
-		float vnoise(vec2 p) {
-			vec2 i = floor(p);
-			vec2 f = fract(p);
-			f = f * f * (3.0 - 2.0 * f);
-			float a = hash(i);
-			float b = hash(i + vec2(1.0, 0.0));
-			float c = hash(i + vec2(0.0, 1.0));
-			float d = hash(i + vec2(1.0, 1.0));
-			return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
-		}
-
-		float fbm(vec2 p) {
-			return 0.65 * vnoise(p) + 0.35 * vnoise(p * 2.7 + 17.3);
-		}
 
 		varying vec4 custom0;
 
@@ -95,34 +75,39 @@ func _apply_material() -> void:
 		void fragment() {
 			float h = custom0.x;
 			float forest = custom0.y;
-
-			vec3 water_col = mix(C_WATER_SHALLOW, C_WATER_DEEP, clamp(-h / 1.5, 0.0, 1.0));
+			float wl = custom0.w;
 
 			vec3 land = C_BEACH;
 			float t_plains = smoothstep(0.28, 0.36, h);
 			land = mix(land, C_PLAINS, t_plains);
-			float t_rock = smoothstep(3.5, 3.65, h);
+			float t_rock = smoothstep(2.6, 2.75, h);
 			land = mix(land, C_ROCK, t_rock);
 			float t_snow = smoothstep(7.0, 7.15, h);
 			land = mix(land, C_SNOW, t_snow);
 			float plains_lo = smoothstep(0.36, 0.5, h);
-			float plains_hi = smoothstep(3.5, 3.3, h);
+			float plains_hi = smoothstep(2.45, 2.3, h);
 			float t_forest = plains_lo * plains_hi * smoothstep(0.06, 0.10, forest);
 			land = mix(land, C_FOREST, t_forest);
 
-			float water_t = smoothstep(0.15, -0.05, h);
-			vec3 base = mix(land, water_col, water_t);
+			// Agua de un solo color plano: sin gradiente, sin espuma. El borde
+			// es una transicion ANCHA (suave, como orilla mojada) para que la
+			// linea de costa no se vea pixelada en lagos y rios pequenos.
+			float water_t = smoothstep(wl + 0.2, wl - 0.2, h);
+			vec3 col = mix(land, C_WATER_DEEP, water_t);
 
-			vec2 wp = UV * vec2(100.0);
-			float n = fbm(wp * 1.4);
-			float m = fbm(wp * 6.2 + 53.7);
-			float detail = n * 0.7 + m * 0.3 - 0.5;
-			ALBEDO = base * (1.0 + detail * noise_amp);
-			ROUGHNESS = 1.0;
+			ALBEDO = col;
+			if (water_t > 0.5) {
+				// Brillo del sol sobre olas amplias y lentas (solo iluminacion)
+				float n1 = sin(UV.x * 40.0 + TIME * 0.6) + sin(UV.y * 30.0 - TIME * 0.4);
+				float n2 = cos(UV.x * 28.0 - TIME * 0.5) + cos(UV.y * 36.0 + TIME * 0.7);
+				NORMAL = normalize(vec3(n1 * 0.15, 1.0, n2 * 0.15));
+				ROUGHNESS = 0.15;
+			} else {
+				ROUGHNESS = 1.0;
+			}
 		}
 	"""
 
 	var mat := ShaderMaterial.new()
 	mat.shader = shader
-	mat.set_shader_parameter("noise_amp", 0.10)
 	set_surface_override_material(0, mat)

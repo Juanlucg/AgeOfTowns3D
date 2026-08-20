@@ -26,5 +26,5 @@ window/size/mode=2
 
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
-environment/defaults/default_clear_color=Color(0.55, 0.75, 0.95, 1)
 textures/default_filters/anisotropic_filtering_level=8
+environment/defaults/default_clear_color=Color(0.55, 0.75, 0.95, 1)

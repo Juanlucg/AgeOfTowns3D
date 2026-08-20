@@ -22,7 +22,7 @@ const SEED := 424242
 # Nivel del mar y bandas de bioma
 const SEA_LEVEL := 0.0
 const BEACH_TOP := 0.28
-const ROCK_LEVEL := 3.5
+const ROCK_LEVEL := 2.6
 const SNOW_LEVEL := 7.0
 
 # Mascara tierra/mar (continente + océano alrededor)
@@ -33,6 +33,7 @@ const EDGE_FALLOFF := 0.9
 const FALLOFF_START := 0.55
 const FALLOFF_END := 1.2
 const MASK_SMOOTH := 4            # blur de la mascara: elimina pozas pequenas
+const LAKE_MIN_DIST := 20.0       # u.m. minimas de un lago al mar (solo lagos de interior)
 
 # Relieve
 const WATER_DEPTH := 1.5          # profundidad del mar
@@ -58,13 +59,28 @@ const RUGGED_FREQ := 2.2
 const FOREST_FREQ := 7.0
 const FOREST_THRESHOLD := 0.08
 
-# Rios
-const RIVER_COUNT := 14
-const RIVER_START_MIN := 0.8
-const RIVER_START_MAX := 4.2
-const RIVER_HALF_WIDTH_U := 1.5 * WORLD_SCALE  # media anchura del cauce, en u.m.
-const RIVER_CARVE := 0.9          # profundidad del cauce
-const RIVER_MAX_STEPS := 600
+# Rio principal: un solo cauce fino que nace en un pequeno lago al pie de la
+# sierra mas alta y desemboca en la costa opuesta, con meandros suaves
+const RIVER_SOURCE_MAX_H := 1.9   # nacimiento mas abajo: el lago queda en la zona llana, separado de la sierra
+const RIVER_SOURCE_LAKE_RADIUS_U := 5.0  # pequeno lago de nacimiento, en u.m.
+const RIVER_SOURCE_LAKE_DEPTH := 0.5     # profundidad del lago de nacimiento (poco profundo)
+const RIVER_HALF_WIDTH_U := 0.9 * WORLD_SCALE  # media anchura del cauce, en u.m.
+const RIVER_CARVE := 1.6          # profundidad del cauce (sobrevive al suavizado)
+const RIVER_WATER_MARGIN := 0.15  # nivel del agua del cauce bajo la orilla
+const RIVER_TURN_PENALTY := 0.7   # suaviza los giros del trazado
+const RIVER_NOISE := 0.10         # pequena aleatoriedad en el trazado
+const RIVER_MOUTH_PULL := 0.6     # atraccion del cauce hacia la boca elegida
+const RIVER_MEANDER_AMP_U := 1.5  # amplitud base de los meandros, en u.m.
+const RIVER_MEANDER_LEN_U := 8.0  # longitud de onda base de los meandros, en u.m.
+const RIVER_MAX_STEPS := 3000
+
+# Lago de montaña: un solo lago, medio, irregular y elevado entre las sierras
+const MOUNTAIN_LAKE_WL := 2.5       # nivel del agua del lago (por encima del mar)
+const MOUNTAIN_LAKE_MIN_SEA := 25.0   # u.m. minimas del lago al mar
+const MOUNTAIN_LAKE_H_MIN := 3.0      # altura del sitio (entre las sierras)
+const MOUNTAIN_LAKE_H_MAX := 6.5
+const MOUNTAIN_LAKE_NEAR := 14.0      # radio para buscar una montaña cercana
+const MOUNTAIN_LAKE_NEAR_H := 4.0     # altura que cuenta como montaña cercana
 
 # Suavizado final del relieve
 const SMOOTH_RADIUS := 2
@@ -90,6 +106,8 @@ var _class_px := PackedByteArray()      # clase por pixel (W*H)
 var _height_px := PackedFloat32Array()  # altura por pixel (W*H)
 var _forest_px := PackedFloat32Array()  # ruido de bosque por pixel (W*H)
 var _water_dist_px := PackedFloat32Array()
+var _wl_px := PackedFloat32Array()     # nivel de agua por pixel (mar=0, rios y lagos elevados)
+var _lake_px := PackedByteArray()      # 1 = lago protegido (no se rellena)
 var _width := 0
 var _height := 0
 var _px_per_unit := 0.0
@@ -174,6 +192,10 @@ func _generate() -> void:
 	# --- Alturas ---
 	var heights := PackedFloat32Array()
 	heights.resize(n)
+	_wl_px.resize(n)
+	_wl_px.fill(0.0)
+	_lake_px.resize(n)
+	_lake_px.fill(0)
 	for idx in range(n):
 		var i := idx % _width
 		var j := idx / _width
@@ -209,25 +231,227 @@ func _generate() -> void:
 		var mtn: float = (MOUNT_BASE + ridge_total * MOUNT_AMP * ridge_amp) * range_m * m_mask
 		heights[idx] = ramp + hills + mtn
 
-	# --- Rios: trazado downhill y excavado del cauce ---
-	var river_mask := PackedByteArray()
-	river_mask.resize(n)
-	river_mask.fill(0)
+	# --- Rio principal: nace en un pequeno lago al pie de la sierra mas alta,
+	# baja con meandros suaves y desemboca en la costa opuesta ---
 	var rng := RandomNumberGenerator.new()
 	rng.seed = SEED + 5
-	for r in range(RIVER_COUNT):
-		_trace_river(heights, river_mask, rng)
-
-	var river_dist := _distance_field(river_mask)
+	var src := _highest_pixel(heights)
+	for _s in range(300):
+		if heights[src] <= RIVER_SOURCE_MAX_H:
+			break
+		var lo := _lowest_neighbor(heights, src)
+		if lo == -1:
+			break
+		src = lo
+	var mouth := _opposite_mouth(heights, src)
+	var sl_center := Vector2(src % _width, src / _width)
+	# Nivel de agua del lago de nacimiento: 0.2 bajo la orilla mas baja, asi el
+	# lago queda hundido en el terreno (nunca flota por encima de el).
+	var lake_wl := 1.0e9
+	for k in range(16):
+		var ang := TAU * k / 16.0
+		var rim := sl_center + Vector2(cos(ang), sin(ang)) * (RIVER_SOURCE_LAKE_RADIUS_U * _px_per_unit * 0.9)
+		var rim_i := clampi(int(round(rim.x)), 0, _width - 1)
+		var rim_j := clampi(int(round(rim.y)), 0, _height - 1)
+		lake_wl = minf(lake_wl, heights[rim_j * _width + rim_i])
+	lake_wl -= 0.2
+	var path := _trace_river(heights, rng, src, mouth)
+	var meander := _meander_polyline(path)
+	var meander_mask := _polyline_mask(meander.points)
+	var river_dist := _distance_field(meander_mask)
 	var half_px := RIVER_HALF_WIDTH_U * _px_per_unit
+	var rtotal: float = meander.cum[meander.cum.size() - 1]
 	for idx in range(n):
 		var rd: float = river_dist[idx]
 		if rd < half_px:
-			heights[idx] -= RIVER_CARVE * _smoothstep(1.0 - rd / half_px)
+			# El nivel de agua del cauce declina desde el lago (s=0) hasta el
+			# mar (s=1), y nunca supera la orilla (sin inundar).
+			var bank: float = heights[idx]
+			var p := Vector2(idx % _width, idx / _width)
+			var s := _along_fraction(p, meander.points, meander.cum, rtotal)
+			_wl_px[idx] = minf(lerpf(lake_wl, SEA_LEVEL, s), bank - RIVER_WATER_MARGIN)
+			heights[idx] = bank - RIVER_CARVE * _smoothstep(1.0 - rd / half_px)
+
+	# --- Lago de nacimiento: pequeno lago hundido al pie de la montaña, del
+	# que nace el rio ---
+	var sl_shape := FastNoiseLite.new()
+	sl_shape.seed = SEED + 11
+	sl_shape.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	sl_shape.frequency = 0.20
+	var sl_radius := RIVER_SOURCE_LAKE_RADIUS_U
+	var sl_bottom := lake_wl - RIVER_SOURCE_LAKE_DEPTH
+	var sl_box := int(sl_radius * 1.5 * _px_per_unit) + 2
+	for j in range(maxi(0, int(sl_center.y) - sl_box), mini(_height - 1, int(sl_center.y) + sl_box) + 1):
+		for i in range(maxi(0, int(sl_center.x) - sl_box), mini(_width - 1, int(sl_center.x) + sl_box) + 1):
+			var d_u: float = Vector2(i, j).distance_to(sl_center) / _px_per_unit
+			var nv := sl_shape.get_noise_2d(float(i) / _px_per_unit, float(j) / _px_per_unit)
+			var rr := sl_radius * (1.0 + 0.25 * nv)
+			if d_u > rr:
+				continue
+			var idx := j * _width + i
+			var orig: float = heights[idx]
+			# El lago ya esta en zona llana: solo se evita excavar una ladera
+			# realmente escarpada si el terreno llega muy alto dentro del circulo
+			# (corte duro, sin fundidos, para no crear picos residuales).
+			if orig - lake_wl > 2.0:
+				continue
+			var target: float
+			if d_u <= rr * 0.4:
+				# Fondo plano del lago (por debajo de su nivel de agua)
+				target = sl_bottom
+			else:
+				var u := (d_u - rr * 0.4) / (rr - rr * 0.4)
+				var t := _smoothstep(clampf(u, 0.0, 1.0))
+				target = lerpf(sl_bottom, orig, t)
+			# El lago nunca rellena el cauce del rio ya excavado: se mantiene lo
+			# mas profundo de los dos, asi el agua del lago conecta con el rio.
+			heights[idx] = minf(target, orig)
+			if heights[idx] < lake_wl:
+				_wl_px[idx] = lake_wl
+				_lake_px[idx] = 1
+	print("[Terrain] rio: fuente=%s boca=%s (lado opuesto)" % [src, mouth])
+
+	# --- Lago de montaña: un solo lago, de tamano medio, con orilla irregular
+	# (ruido) y elevado entre las sierras, en correlacion con sus alturas ---
+	var lake_rng := RandomNumberGenerator.new()
+	lake_rng.seed = SEED + 8
+	var lake_shape := FastNoiseLite.new()
+	lake_shape.seed = SEED + 9
+	lake_shape.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	lake_shape.frequency = 0.16
+	for attempt in range(400):
+		var px := lake_rng.randi_range(20, _width - 21)
+		var py := lake_rng.randi_range(20, _height - 21)
+		var pidx := py * _width + px
+		var h0: float = heights[pidx]
+		if h0 < MOUNTAIN_LAKE_H_MIN or h0 > MOUNTAIN_LAKE_H_MAX:
+			continue
+		if coast_dist[pidx] / _px_per_unit < MOUNTAIN_LAKE_MIN_SEA:
+			continue
+		var near_mtn := false
+		for k in range(8):
+			var ang := TAU * k / 8.0
+			var sx := clampi(px + int(cos(ang) * MOUNTAIN_LAKE_NEAR * _px_per_unit), 0, _width - 1)
+			var sy := clampi(py + int(sin(ang) * MOUNTAIN_LAKE_NEAR * _px_per_unit), 0, _height - 1)
+			if heights[sy * _width + sx] >= MOUNTAIN_LAKE_NEAR_H:
+				near_mtn = true
+				break
+		if not near_mtn:
+			continue
+		var center := Vector2(px, py)
+		var radius_u := lake_rng.randf_range(8.0, 11.0)
+		var core_frac := 0.5
+		var bottom := MOUNTAIN_LAKE_WL - 1.2
+		var box := int(radius_u * 1.5 * _px_per_unit) + 2
+		var x0 := maxi(0, px - box)
+		var x1 := mini(_width - 1, px + box)
+		var y0 := maxi(0, py - box)
+		var y1 := mini(_height - 1, py + box)
+		for j in range(y0, y1 + 1):
+			for i in range(x0, x1 + 1):
+				var d_u: float = Vector2(i, j).distance_to(center) / _px_per_unit
+				# Radio local irregular (ruido en coords de mundo y estirado
+				# para que la orilla sea lobulada, no un circulo)
+				var nv := lake_shape.get_noise_2d(float(i) / _px_per_unit * 1.3, float(j) / _px_per_unit * 0.8)
+				var rr := radius_u * (1.0 + 0.5 * nv)
+				if d_u > rr:
+					continue
+				var orig: float = heights[j * _width + i]
+				var target: float
+				if d_u <= rr * core_frac:
+					# Fondo plano del lago (por debajo de su nivel de agua)
+					target = bottom
+				else:
+					var u := (d_u - rr * core_frac) / (rr - rr * core_frac)
+					var t := _smoothstep(clampf(u, 0.0, 1.0))
+					target = lerpf(bottom, orig, t)
+				heights[j * _width + i] = target
+				_wl_px[j * _width + i] = MOUNTAIN_LAKE_WL
+				_lake_px[j * _width + i] = 1
+		break
+
+	# --- Nivel de agua suavizado: se difumina _wl_px para que el borde de
+	# los lagos y el cauce del rio no tengan saltos de 1 px entre celdas ---
+	_wl_px = _blur_y(_blur_x(_wl_px, 1), 1)
 
 	# --- Suavizado final del relieve ---
 	heights = _blur_y(_blur_x(heights, SMOOTH_RADIUS), SMOOTH_RADIUS)
 	_height_px = heights
+
+	# --- Lagos solo en el interior: se rellenan las masas de agua aisladas
+	# (tramos de rio excavados que quedaron desconectados) pegadas a la costa.
+	# Un lago permitido debe estar lejos del mar. ---
+	var wmask := PackedByteArray()
+	wmask.resize(n)
+	for i in range(n):
+		wmask[i] = 1 if heights[i] < _wl_px[i] else 0
+	var wcomp := PackedInt32Array()
+	wcomp.resize(n)
+	wcomp.fill(-1)
+	var wcomp_ocean: Array[bool] = []
+	var wcomp_lake: Array[bool] = []
+	var wstack: Array[int] = []
+	var wcid := 0
+	for idx in range(n):
+		if wmask[idx] == 0 or wcomp[idx] != -1:
+			continue
+		var ocean := false
+		var elevated := false
+		wstack.append(idx)
+		wcomp[idx] = wcid
+		while wstack.size() > 0:
+			var cur: int = wstack.pop_back()
+			if _lake_px[cur] == 1:
+				elevated = true
+			var ci := cur % _width
+			var cj := cur / _width
+			if ci == 0 or cj == 0 or ci == _width - 1 or cj == _height - 1:
+				ocean = true
+			if ci > 0 and wmask[cur - 1] == 1 and wcomp[cur - 1] == -1:
+				wcomp[cur - 1] = wcid
+				wstack.append(cur - 1)
+			if ci < _width - 1 and wmask[cur + 1] == 1 and wcomp[cur + 1] == -1:
+				wcomp[cur + 1] = wcid
+				wstack.append(cur + 1)
+			if cj > 0 and wmask[cur - _width] == 1 and wcomp[cur - _width] == -1:
+				wcomp[cur - _width] = wcid
+				wstack.append(cur - _width)
+			if cj < _height - 1 and wmask[cur + _width] == 1 and wcomp[cur + _width] == -1:
+				wcomp[cur + _width] = wcid
+				wstack.append(cur + _width)
+		wcomp_ocean.append(ocean)
+		wcomp_lake.append(elevated)
+		wcid += 1
+
+	var wocean := PackedByteArray()
+	wocean.resize(n)
+	wocean.fill(0)
+	for i in range(n):
+		if wmask[i] == 1 and wcomp_ocean[wcomp[i]]:
+			wocean[i] = 1
+	var wocean_dist := _distance_field(wocean)
+	var wlake_min := {}
+	for i in range(n):
+		if wmask[i] == 0:
+			continue
+		var c: int = wcomp[i]
+		if wcomp_ocean[c]:
+			continue
+		var d: float = wocean_dist[i]
+		if not wlake_min.has(c) or d < wlake_min[c]:
+			wlake_min[c] = d
+	var lake_min_px := LAKE_MIN_DIST * _px_per_unit
+	var filled := 0
+	for i in range(n):
+		if wmask[i] == 0:
+			continue
+		var c: int = wcomp[i]
+		if not wcomp_ocean[c] and wlake_min[c] < lake_min_px and not wcomp_lake[c]:
+			heights[i] = 0.1
+			_wl_px[i] = 0.0
+			filled += 1
+	_height_px = heights
+	print("[Terrain] lagos_rellenados=%d" % filled)
 
 	# --- Biomas ---
 	var water_mask := PackedByteArray()
@@ -243,7 +467,7 @@ func _generate() -> void:
 	cls.resize(n)
 	for idx in range(n):
 		var h: float = heights[idx]
-		var is_water := h < SEA_LEVEL
+		var is_water := h < _wl_px[idx]
 		water_mask[idx] = 1 if is_water else 0
 		if is_water:
 			cls[idx] = CLASS_WATER
@@ -268,30 +492,46 @@ func _generate() -> void:
 # ---------------------------------------------------------------------------
 # Rios
 # ---------------------------------------------------------------------------
-func _trace_river(heights: PackedFloat32Array, river_mask: PackedByteArray, rng: RandomNumberGenerator) -> void:
+func _lowest_neighbor(heights: PackedFloat32Array, cur: int) -> int:
+	var i := cur % _width
+	var j := cur / _width
+	var best := -1
+	var best_h: float = heights[cur]
+	for dj in range(-1, 2):
+		for di in range(-1, 2):
+			if di == 0 and dj == 0:
+				continue
+			var ni := i + di
+			var nj := j + dj
+			if ni < 0 or ni >= _width or nj < 0 or nj >= _height:
+				continue
+			var nidx := nj * _width + ni
+			if heights[nidx] < best_h:
+				best_h = heights[nidx]
+				best = nidx
+	return best
+
+
+func _trace_river(heights: PackedFloat32Array, rng: RandomNumberGenerator, start_idx: int, mouth: Vector2i) -> Array[int]:
 	var w := _width
 	var h := _height
-
-	var start := -1
-	for attempt in range(300):
-		var idx := rng.randi_range(0, w * h - 1)
-		var hv: float = heights[idx]
-		if hv >= RIVER_START_MIN and hv <= RIVER_START_MAX:
-			start = idx
-			break
-	if start == -1:
-		return
-
-	var cur := start
+	var path: Array[int] = []
+	var visited := PackedByteArray()
+	visited.resize(w * h)
+	visited.fill(0)
+	var cur := start_idx
+	var prev_dir := Vector2i.ZERO
 	var steps := 0
 	while steps < RIVER_MAX_STEPS:
 		if heights[cur] < SEA_LEVEL:
 			break
-		river_mask[cur] = 1
+		path.append(cur)
+		visited[cur] = 1
 		var i := cur % w
 		var j := cur / w
 		var best := -1
-		var best_h: float = heights[cur]
+		var best_cost := 1.0e9
+		var to_mouth := Vector2(mouth - Vector2i(i, j)).normalized()
 		for dj in range(-1, 2):
 			for di in range(-1, 2):
 				if di == 0 and dj == 0:
@@ -301,21 +541,185 @@ func _trace_river(heights: PackedFloat32Array, river_mask: PackedByteArray, rng:
 				if ni < 0 or ni >= w or nj < 0 or nj >= h:
 					continue
 				var nidx := nj * w + ni
+				if visited[nidx] == 1:
+					continue
 				var nh: float = heights[nidx]
-				if nh < best_h:
-					best_h = nh
+				# Coste = altura + penalizacion de giro + atraccion hacia la boca
+				# + pequeno ruido: el rio desciende, conserva su direccion y se
+				# orienta hacia la costa opuesta.
+				var cost := nh
+				if prev_dir != Vector2i.ZERO:
+					var nd := Vector2i(di, dj)
+					var turn := 1.0 - Vector2(prev_dir).normalized().dot(Vector2(nd).normalized())
+					cost += turn * RIVER_TURN_PENALTY
+				cost += (1.0 - to_mouth.dot(Vector2(di, dj).normalized())) * RIVER_MOUTH_PULL
+				cost += rng.randf_range(-RIVER_NOISE, RIVER_NOISE)
+				if cost < best_cost:
+					best_cost = cost
 					best = nidx
 		if best == -1:
 			break
-		if river_mask[best] == 1:
-			break
+		prev_dir = Vector2i(best % w - i, best / w - j)
 		cur = best
 		steps += 1
+	return path
+
+
+func _meander_polyline(path: Array[int]) -> Dictionary:
+	var pts := PackedVector2Array()
+	for idx in path:
+		pts.append(Vector2(idx % _width, idx / _width))
+	var cum := PackedFloat32Array()
+	cum.resize(pts.size())
+	cum[0] = 0.0
+	for k in range(1, pts.size()):
+		cum[k] = cum[k - 1] + pts[k].distance_to(pts[k - 1])
+	var total: float = cum[pts.size() - 1]
+	if pts.size() < 3 or total <= 0.0:
+		return {"points": pts, "cum": cum}
+	var amp_px := RIVER_MEANDER_AMP_U * _px_per_unit
+	var len_px := RIVER_MEANDER_LEN_U * _px_per_unit
+	# Meandros irregulares: amplitud y onda moduladas por senos lentos, con
+	# tramos mas curvos y otros casi rectos (nada de curvas uniformes).
+	var meandered := PackedVector2Array()
+	meandered.resize(pts.size())
+	for k in range(pts.size()):
+		# Normal perpendicular al flujo
+		var nrm: Vector2
+		if k == 0:
+			nrm = (pts[1] - pts[0]).orthogonal().normalized()
+		elif k == pts.size() - 1:
+			nrm = (pts[k] - pts[k - 1]).orthogonal().normalized()
+		else:
+			nrm = (pts[k + 1] - pts[k - 1]).orthogonal().normalized()
+		var s: float = cum[k] / len_px * TAU
+		var amp_mod: float = 0.35 + 0.65 * (0.5 + 0.5 * sin(cum[k] * 0.05 + 1.3))
+		var gate: float = 0.30 + 0.70 * (0.5 + 0.5 * sin(cum[k] * 0.028 + 4.7))
+		var phase: float = sin(cum[k] * 0.041 + 2.2) * 1.8
+		# Los meandros se atenuan en el nacimiento y la desembocadura
+		var fade := clampf(minf(cum[k], total - cum[k]) / 10.0, 0.2, 1.0)
+		meandered[k] = pts[k] + nrm * (amp_px * amp_mod * gate * fade * sin(s + phase))
+	# Suavizado (media movil) para eliminar el aspecto pixelado
+	var smooth := PackedVector2Array()
+	smooth.resize(pts.size())
+	for k in range(pts.size()):
+		var acc := Vector2.ZERO
+		var cnt := 0
+		for o in range(-3, 4):
+			acc += meandered[clampi(k + o, 0, pts.size() - 1)]
+			cnt += 1
+		smooth[k] = acc / float(cnt)
+	# Distancias acumuladas a lo largo de la polilinea ya suavizada
+	var scum := PackedFloat32Array()
+	scum.resize(smooth.size())
+	scum[0] = 0.0
+	for k in range(1, smooth.size()):
+		scum[k] = scum[k - 1] + smooth[k].distance_to(smooth[k - 1])
+	return {"points": smooth, "cum": scum}
+
+
+func _polyline_mask(pts: PackedVector2Array) -> PackedByteArray:
+	var m := PackedByteArray()
+	m.resize(_width * _height)
+	m.fill(0)
+	for k in range(pts.size()):
+		var pi := clampi(int(round(pts[k].x)), 0, _width - 1)
+		var pj := clampi(int(round(pts[k].y)), 0, _height - 1)
+		m[pj * _width + pi] = 1
+	return m
+
+
+func _along_fraction(p: Vector2, pts: PackedVector2Array, cum: PackedFloat32Array, total: float) -> float:
+	if pts.size() < 2 or total <= 0.0:
+		return 0.0
+	var stride := maxi(1, pts.size() / 16)
+	var best := 0
+	var best_d := 1.0e18
+	for k in range(0, pts.size(), stride):
+		var d: float = pts[k].distance_squared_to(p)
+		if d < best_d:
+			best_d = d
+			best = k
+	for k in range(maxi(0, best - stride * 2), mini(pts.size() - 1, best + stride * 2) + 1):
+		var d: float = pts[k].distance_squared_to(p)
+		if d < best_d:
+			best_d = d
+			best = k
+	return cum[best] / total
+
+
+func _opposite_mouth(heights: PackedFloat32Array, src: int) -> Vector2i:
+	# Boca en la costa opuesta al lado mas cercano a la fuente
+	var si := src % _width
+	var sj := src / _width
+	var nx := float(si) / float(_width)
+	var ny := float(sj) / float(_height)
+	var nearest := 0
+	var nearest_d := nx
+	if 1.0 - nx < nearest_d:
+		nearest_d = 1.0 - nx
+		nearest = 1
+	if ny < nearest_d:
+		nearest_d = ny
+		nearest = 2
+	if 1.0 - ny < nearest_d:
+		nearest_d = 1.0 - ny
+		nearest = 3
+	var side := (nearest + 2) % 4
+	var band := int(float(mini(_width, _height)) * 0.35)
+	var best := Vector2i(-1, -1)
+	var best_d := 1.0e18
+	for j in range(_height):
+		for i in range(_width):
+			var on_side := false
+			match side:
+				0:
+					on_side = i <= band
+				1:
+					on_side = i >= _width - 1 - band
+				2:
+					on_side = j <= band
+				_:
+					on_side = j >= _height - 1 - band
+			if not on_side:
+				continue
+			var idx := j * _width + i
+			if heights[idx] <= 0.0 or heights[idx] > BEACH_TOP:
+				continue
+			var touches := false
+			for dj in range(-1, 2):
+				for di in range(-1, 2):
+					if di == 0 and dj == 0:
+						continue
+					var ni := clampi(i + di, 0, _width - 1)
+					var nj := clampi(j + dj, 0, _height - 1)
+					if heights[nj * _width + ni] < SEA_LEVEL:
+						touches = true
+						break
+				if touches:
+					break
+			if not touches:
+				continue
+			var d := (si - i) * (si - i) + (sj - j) * (sj - j)
+			if d < best_d:
+				best_d = d
+				best = Vector2i(i, j)
+	return best
 
 
 # ---------------------------------------------------------------------------
 # Herramientas de imagen / campo de distancias
 # ---------------------------------------------------------------------------
+func _highest_pixel(heights: PackedFloat32Array) -> int:
+	var best := 0
+	var best_h: float = heights[0]
+	for i in range(1, heights.size()):
+		if heights[i] > best_h:
+			best_h = heights[i]
+			best = i
+	return best
+
+
 func _smoothstep(t: float) -> float:
 	return t * t * (3.0 - 2.0 * t)
 
@@ -406,7 +810,41 @@ func _pixel(p: Vector2) -> Vector2i:
 	return Vector2i(px, py)
 
 
+func _catmull1(p0: float, p1: float, p2: float, p3: float, t: float) -> float:
+	var t2 := t * t
+	var t3 := t2 * t
+	return 0.5 * (2.0 * p1 + (p2 - p0) * t + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2 + (3.0 * p1 - p0 - 3.0 * p2 + p3) * t3)
+
+
+func _bicubic(data: PackedFloat32Array, w: int, h: int, fx: float, fy: float) -> float:
+	# Interpolacion Catmull-Rom C1: suaviza los escalones de la rejilla de
+	# pixeles (causa del borde de agua "serrado") sin emborronar el relieve.
+	var x0 := int(fx) - 1
+	var y0 := int(fy) - 1
+	var tx := fx - int(fx)
+	var ty := fy - int(fy)
+	var row := PackedFloat32Array()
+	row.resize(4)
+	for i in range(4):
+		var xi := clampi(x0 + i, 0, w - 1)
+		var col := PackedFloat32Array()
+		col.resize(4)
+		for j in range(4):
+			var yj := clampi(y0 + j, 0, h - 1)
+			col[j] = data[yj * w + xi]
+		row[i] = _catmull1(col[0], col[1], col[2], col[3], ty)
+	return _catmull1(row[0], row[1], row[2], row[3], tx)
+
+
 func height_at(p: Vector2) -> float:
+	if _width == 0:
+		return 0.0
+	var fx: float = clampf(p.x / WORLD_SIZE, 0.0, 1.0) * float(_width - 1)
+	var fy: float = clampf(p.y / WORLD_SIZE, 0.0, 1.0) * float(_height - 1)
+	return _bicubic(_height_px, _width, _height, fx, fy)
+
+
+func water_level_at(p: Vector2) -> float:
 	if _width == 0:
 		return 0.0
 	var fx: float = clampf(p.x / WORLD_SIZE, 0.0, 1.0) * float(_width - 1)
@@ -417,10 +855,12 @@ func height_at(p: Vector2) -> float:
 	var y1 := mini(y0 + 1, _height - 1)
 	var tx := fx - x0
 	var ty := fy - y0
-	var v00: float = _height_px[y0 * _width + x0]
-	var v10: float = _height_px[y0 * _width + x1]
-	var v01: float = _height_px[y1 * _width + x0]
-	var v11: float = _height_px[y1 * _width + x1]
+	# Interpolacion bilineal: el nivel de agua varia de forma continua entre
+	# pixeles (no a saltos), eliminando el borde de agua escalonado.
+	var v00: float = _wl_px[y0 * _width + x0]
+	var v10: float = _wl_px[y0 * _width + x1]
+	var v01: float = _wl_px[y1 * _width + x0]
+	var v11: float = _wl_px[y1 * _width + x1]
 	return lerpf(lerpf(v00, v10, tx), lerpf(v01, v11, tx), ty)
 
 

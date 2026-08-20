@@ -41,6 +41,37 @@ uniform float sun_size = 0.018;
 uniform vec3 moon_dir = vec3(0.0, -1.0, 0.0);
 uniform vec3 moon_color : source_color = vec3(0.9, 0.95, 1.0);
 uniform float moon_size = 0.014;
+uniform vec3 cloud_color : source_color = vec3(0.95, 0.97, 1.0);
+uniform float cloud_amount = 0.6;
+uniform float cloud_day = 1.0;
+
+float hash(vec2 p) {
+	p = fract(p * vec2(123.34, 456.21));
+	p += dot(p, p + 45.32);
+	return fract(p.x * p.y);
+}
+
+float vnoise(vec2 p) {
+	vec2 i = floor(p);
+	vec2 f = fract(p);
+	f = f * f * (3.0 - 2.0 * f);
+	float a = hash(i);
+	float b = hash(i + vec2(1.0, 0.0));
+	float c = hash(i + vec2(0.0, 1.0));
+	float d = hash(i + vec2(1.0, 1.0));
+	return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+float fbm(vec2 p) {
+	float v = 0.0;
+	float a = 0.5;
+	for (int i = 0; i < 4; i++) {
+		v += a * vnoise(p);
+		p *= 2.2;
+		a *= 0.5;
+	}
+	return v;
+}
 
 void sky() {
 	vec3 dir = normalize(EYEDIR);
@@ -54,6 +85,14 @@ void sky() {
 		float t = pow(clamp(-y, 0.0, 1.0), 0.6);
 		col = mix(ground_horizon, ground_bottom, t);
 	}
+
+	// Nubes: copos dispersos con ruido de alta frecuencia (solo los picos del
+	// fbm superan el umbral), desplazados con el tiempo y desvanecidos de
+	// noche (cloud_day). El offset evita que el patron colapse en el cenit.
+	vec2 cp = dir.xz * 12.0 + vec2(6.0, 3.0) + vec2(TIME * 0.02, 0.0);
+	float n = fbm(cp) * 0.7 + vnoise(cp * 3.0 + 17.0) * 0.3;
+	float cloud = smoothstep(0.60, 0.76, n) * cloud_amount;
+	col = mix(col, cloud_color, cloud * smoothstep(0.0, 0.05, y) * cloud_day * 0.55);
 
 	// Hundimiento real: el disco se recorta por la linea del horizonte
 	// (bajo el horizonte no se ve nada; banda minima solo antialiasing)
@@ -163,6 +202,7 @@ func _apply_lighting() -> void:
 	_sky.set_shader_parameter("sun_color", _v(sun_color))
 	_sky.set_shader_parameter("moon_dir", -sun_dir)
 	_sky.set_shader_parameter("moon_color", _v(MOON_DISC_COLOR))
+	_sky.set_shader_parameter("cloud_day", sky_curve)
 
 	# Luz ambiental: la noche nunca queda a oscuras
 	_env.ambient_light_energy = lerpf(NIGHT_AMBIENT, DAY_AMBIENT, day_curve)
