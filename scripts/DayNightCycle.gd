@@ -6,14 +6,14 @@ extends Node3D
 # El sol y la luna se dibujan dentro del propio shader del cielo: sin sprites,
 # se desvanecen gradualmente cerca del horizonte y no generan artefactos.
 
-@export var cycle_duration := 180.0   # segundos por dia completo
+@export var cycle_duration := 600.0   # segundos por dia completo (10 min)
 @export var start_time := 0.42        # hora inicial (0.0 = medianoche, 0.5 = mediodia)
 
 const SUN_ENERGY_MAX := 1.0
 const MOON_ENERGY := 0.5
 const DAY_AMBIENT := 0.35
 const NIGHT_AMBIENT := 0.25
-const DAY_FRACTION := 0.62   # fraccion del ciclo con el sol sobre el horizonte
+const DAY_FRACTION := 0.9   # fraccion del ciclo con el sol sobre el horizonte (9 min de dia, 1 de noche)
 
 # Cielo de dia
 const SKY_TOP_DAY := Color(0.22, 0.48, 1.0)
