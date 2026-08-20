@@ -16,15 +16,21 @@ func _build_mesh() -> ArrayMesh:
 	var size: float = Terrain.WORLD_SIZE
 	var steps := int(size / CELL)
 	var side := steps + 1
+	var nv := side * side
 
-	var st := SurfaceTool.new()
-	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	st.set_custom_format(0, SurfaceTool.CUSTOM_RGBA_FLOAT)
+	var verts := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	var custom := PackedFloat32Array()
+	var hgrid := PackedFloat32Array()
+	verts.resize(nv)
+	uvs.resize(nv)
+	custom.resize(nv * 4)
+	hgrid.resize(nv)
 
 	for j in range(side):
+		var y: float = j * CELL
 		for i in range(side):
 			var x: float = i * CELL
-			var y: float = j * CELL
 			var p := Vector2(x, y)
 			var h: float = Terrain.height_at(p)
 			var forest: float = Terrain.forest_at(p)
@@ -32,25 +38,64 @@ func _build_mesh() -> ArrayMesh:
 			# Bajo el nivel local de agua (mar=0, lagos elevados): superficie
 			# plana a ese nivel (en CPU para que las normales queden correctas)
 			var surf_h := wl if h < wl else h
-			st.set_custom(0, Color(h, forest, 0.0, wl))
-			st.set_uv(Vector2(x / size, y / size))
-			st.add_vertex(Vector3(x, surf_h, y))
+			var idx := j * side + i
+			var c4 := idx * 4
+			hgrid[idx] = surf_h
+			verts[idx] = Vector3(x, surf_h, y)
+			uvs[idx] = Vector2(x / size, y / size)
+			custom[c4] = h
+			custom[c4 + 1] = forest
+			custom[c4 + 2] = 0.0
+			custom[c4 + 3] = wl
 
+	var normals := PackedVector3Array()
+	normals.resize(nv)
+	for j in range(side):
+		var row := j * side
+		var row_u := maxi(0, j - 1) * side
+		var row_d := mini(side - 1, j + 1) * side
+		for i in range(side):
+			var il := maxi(0, i - 1)
+			var ir := mini(side - 1, i + 1)
+			var dl: float = hgrid[row + il]
+			var dr: float = hgrid[row + ir]
+			var du: float = hgrid[row_u + i]
+			var dd: float = hgrid[row_d + i]
+			normals[row + i] = Vector3(dr - dl, -2.0 * CELL, dd - du).normalized()
+
+	var inds := PackedInt32Array()
+	inds.resize(steps * steps * 6)
+	var o := 0
 	for j in range(steps):
 		for i in range(steps):
 			var a := j * side + i
 			var b := a + 1
 			var c := a + side
 			var d := c + 1
-			st.add_index(a)
-			st.add_index(c)
-			st.add_index(b)
-			st.add_index(b)
-			st.add_index(c)
-			st.add_index(d)
+			inds[o] = a
+			o += 1
+			inds[o] = c
+			o += 1
+			inds[o] = b
+			o += 1
+			inds[o] = b
+			o += 1
+			inds[o] = c
+			o += 1
+			inds[o] = d
+			o += 1
 
-	st.generate_normals()
-	return st.commit()
+	var arr := []
+	arr.resize(Mesh.ARRAY_MAX)
+	arr[Mesh.ARRAY_VERTEX] = verts
+	arr[Mesh.ARRAY_NORMAL] = normals
+	arr[Mesh.ARRAY_TEX_UV] = uvs
+	arr[Mesh.ARRAY_CUSTOM0] = custom
+	arr[Mesh.ARRAY_INDEX] = inds
+	var m := ArrayMesh.new()
+	var flags := Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM0_SHIFT
+	m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr, [], {}, flags)
+	return m
 
 
 func _apply_material() -> void:

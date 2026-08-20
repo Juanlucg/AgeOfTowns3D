@@ -162,34 +162,46 @@ func _generate() -> void:
 	forest_noise.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	forest_noise.frequency = FOREST_FREQ
 
-	# --- Mascara tierra/mar ---
-	var cont := PackedFloat32Array()
-	cont.resize(n)
-	for j in range(_height):
-		for i in range(_width):
-			var nx := float(i) / float(_width)
-			var ny := float(j) / float(_height)
+	# --- Mascara tierra/mar a baja resolucion (campo de baja frecuencia) ---
+	var MASK_LOW := 192
+	var ml := MASK_LOW
+	var cont_low := PackedFloat32Array()
+	cont_low.resize(ml * ml)
+	for j in range(ml):
+		for i in range(ml):
+			var nx := float(i) / float(ml)
+			var ny := float(j) / float(ml)
 			var cx := nx - 0.5
 			var cy := ny - 0.5
 			var d := sqrt(cx * cx + cy * cy) * 2.0
 			var falloff := _smoothstep(clampf((d - FALLOFF_START) / (FALLOFF_END - FALLOFF_START), 0.0, 1.0))
-			cont[j * _width + i] = base_noise.get_noise_2d(nx, ny) * CONTINENT_GAIN - falloff * EDGE_FALLOFF + CONTINENT_SHORE
+			cont_low[j * ml + i] = base_noise.get_noise_2d(nx, ny) * CONTINENT_GAIN - falloff * EDGE_FALLOFF + CONTINENT_SHORE
 
-	# Suaviza la mascara para eliminar pozas/islotes de ruido diminutos
-	cont = _blur_y(_blur_x(cont, MASK_SMOOTH), MASK_SMOOTH)
+	# Suaviza la mascara a baja resolucion (equivale al blur a res. completa)
+	cont_low = _blur_y_dim(_blur_x_dim(cont_low, ml, ml, 1), ml, ml, 1)
+	var sea_mask_low := PackedByteArray()
+	sea_mask_low.resize(ml * ml)
+	var land_mask_low := PackedByteArray()
+	land_mask_low.resize(ml * ml)
+	for i in range(ml * ml):
+		if cont_low[i] < 0.0:
+			sea_mask_low[i] = 1
+		else:
+			land_mask_low[i] = 1
+
+	var coast_dist_low := _distance_field_dim(sea_mask_low, ml, ml)
+	var land_dist_low := _distance_field_dim(land_mask_low, ml, ml)
+	var _lr_scale := float(_width) / float(ml)
+	var coast_dist := _upsample_field(coast_dist_low, ml, ml, _lr_scale)
+	var land_dist := _upsample_field(land_dist_low, ml, ml, _lr_scale)
+
 	var sea_mask := PackedByteArray()
 	sea_mask.resize(n)
 	sea_mask.fill(0)
+	var cont_full := _upsample_field(cont_low, ml, ml)
 	for i in range(n):
-		if cont[i] < 0.0:
+		if cont_full[i] < 0.0:
 			sea_mask[i] = 1
-
-	var land_mask := PackedByteArray()
-	land_mask.resize(n)
-	for i in range(n):
-		land_mask[i] = 1 - sea_mask[i]
-	var coast_dist := _distance_field(sea_mask)   # tierra -> costa
-	var land_dist := _distance_field(land_mask)   # mar -> costa
 
 	# --- Alturas ---
 	var heights := PackedFloat32Array()
@@ -260,8 +272,18 @@ func _generate() -> void:
 	var path := _trace_river(heights, rng, src, mouth)
 	var meander := _meander_polyline(path)
 	var meander_mask := _polyline_mask(meander.points)
-	var river_dist := _distance_field(meander_mask)
 	var half_px := RIVER_HALF_WIDTH_U * _px_per_unit
+	# Campo de distancias del cauce solo dentro de su caja (no en todo el mapa)
+	var pad := int(half_px * 2.5) + 2
+	var rmin := Vector2(1.0e9, 1.0e9)
+	var rmax := Vector2(-1.0e9, -1.0e9)
+	for pt in meander.points:
+		rmin.x = minf(rmin.x, pt.x)
+		rmin.y = minf(rmin.y, pt.y)
+		rmax.x = maxf(rmax.x, pt.x)
+		rmax.y = maxf(rmax.y, pt.y)
+	var rbox := Rect2i(int(rmin.x) - pad, int(rmin.y) - pad, int(rmax.x - rmin.x) + pad * 2 + 1, int(rmax.y - rmin.y) + pad * 2 + 1)
+	var river_dist := _distance_field_region(meander_mask, rbox)
 	var rtotal: float = meander.cum[meander.cum.size() - 1]
 	# Fraccion del cauce (al final) dedicada a fundir la desembocadura con el mar
 	var mouth_frac := 1.0
@@ -742,8 +764,10 @@ func _smoothstep(t: float) -> float:
 
 
 func _distance_field(inside: PackedByteArray) -> PackedFloat32Array:
-	var w := _width
-	var h := _height
+	return _distance_field_dim(inside, _width, _height)
+
+
+func _distance_field_dim(inside: PackedByteArray, w: int, h: int) -> PackedFloat32Array:
 	var dist := PackedFloat32Array()
 	dist.resize(w * h)
 	dist.fill(1.0e9)
@@ -783,9 +807,82 @@ func _distance_field(inside: PackedByteArray) -> PackedFloat32Array:
 	return dist
 
 
+func _distance_field_region(inside: PackedByteArray, box: Rect2i) -> PackedFloat32Array:
+	# Campo de distancias calculado solo dentro de una region (la caja del rio).
+	# Los pixeles fuera de la region quedan con distancia enorme (no se usan).
+	var dist := PackedFloat32Array()
+	dist.resize(_width * _height)
+	dist.fill(1.0e9)
+	var x0 := clampi(box.position.x, 0, _width - 1)
+	var y0 := clampi(box.position.y, 0, _height - 1)
+	var x1 := clampi(box.end.x - 1, 0, _width - 1)
+	var y1 := clampi(box.end.y - 1, 0, _height - 1)
+	for j in range(y0, y1 + 1):
+		for i in range(x0, x1 + 1):
+			if inside[j * _width + i] == 1:
+				dist[j * _width + i] = 0.0
+	for j in range(y0, y1 + 1):
+		for i in range(x0, x1 + 1):
+			var idx := j * _width + i
+			var d := dist[idx]
+			if i > x0:
+				d = minf(d, dist[idx - 1] + 1.0)
+			if j > y0:
+				d = minf(d, dist[idx - _width] + 1.0)
+			if i > x0 and j > y0:
+				d = minf(d, dist[idx - _width - 1] + 1.41421)
+			if i < x1 and j > y0:
+				d = minf(d, dist[idx - _width + 1] + 1.41421)
+			dist[idx] = d
+	for j in range(y1, y0 - 1, -1):
+		for i in range(x1, x0 - 1, -1):
+			var idx := j * _width + i
+			var d := dist[idx]
+			if i < x1:
+				d = minf(d, dist[idx + 1] + 1.0)
+			if j < y1:
+				d = minf(d, dist[idx + _width] + 1.0)
+			if i < x1 and j < y1:
+				d = minf(d, dist[idx + _width + 1] + 1.41421)
+			if i > x0 and j < y1:
+				d = minf(d, dist[idx + _width - 1] + 1.41421)
+			dist[idx] = d
+	return dist
+
+
+func _upsample_field(low: PackedFloat32Array, lw: int, lh: int, scale := 1.0) -> PackedFloat32Array:
+	# Upscale bilineal de un campo de baja resolucion al tamano completo del mapa.
+	# scale multiplica el resultado (p.ej. para pasar distancias de pixeles
+	# low-res a pixeles del mapa completo).
+	var out := PackedFloat32Array()
+	out.resize(_width * _height)
+	for j in range(_height):
+		var fy := (float(j) + 0.5) / float(_height) * float(lh) - 0.5
+		var y0 := clampi(int(floor(fy)), 0, lh - 1)
+		var y1 := mini(y0 + 1, lh - 1)
+		var ty: float = fy - floor(fy)
+		for i in range(_width):
+			var fx := (float(i) + 0.5) / float(_width) * float(lw) - 0.5
+			var x0 := clampi(int(floor(fx)), 0, lw - 1)
+			var x1 := mini(x0 + 1, lw - 1)
+			var tx: float = fx - floor(fx)
+			var v00 := low[y0 * lw + x0]
+			var v10 := low[y0 * lw + x1]
+			var v01 := low[y1 * lw + x0]
+			var v11 := low[y1 * lw + x1]
+			out[j * _width + i] = lerpf(lerpf(v00, v10, tx), lerpf(v01, v11, tx), ty) * scale
+	return out
+
+
 func _blur_x(src: PackedFloat32Array, radius: int) -> PackedFloat32Array:
-	var w := _width
-	var h := _height
+	return _blur_x_dim(src, _width, _height, radius)
+
+
+func _blur_y(src: PackedFloat32Array, radius: int) -> PackedFloat32Array:
+	return _blur_y_dim(src, _width, _height, radius)
+
+
+func _blur_x_dim(src: PackedFloat32Array, w: int, h: int, radius: int) -> PackedFloat32Array:
 	var out := src.duplicate()
 	var pref := PackedFloat32Array()
 	pref.resize(w + 1)
@@ -801,9 +898,7 @@ func _blur_x(src: PackedFloat32Array, radius: int) -> PackedFloat32Array:
 	return out
 
 
-func _blur_y(src: PackedFloat32Array, radius: int) -> PackedFloat32Array:
-	var w := _width
-	var h := _height
+func _blur_y_dim(src: PackedFloat32Array, w: int, h: int, radius: int) -> PackedFloat32Array:
 	var out := src.duplicate()
 	var pref := PackedFloat32Array()
 	pref.resize(h + 1)
@@ -836,21 +931,25 @@ func _catmull1(p0: float, p1: float, p2: float, p3: float, t: float) -> float:
 func _bicubic(data: PackedFloat32Array, w: int, h: int, fx: float, fy: float) -> float:
 	# Interpolacion Catmull-Rom C1: suaviza los escalones de la rejilla de
 	# pixeles (causa del borde de agua "serrado") sin emborronar el relieve.
+	# Sin reservas de arrays por llamada (se usa muchisimo al construir la
+	# malla y las allocaciones eran el cuello de botella).
 	var x0 := int(fx) - 1
 	var y0 := int(fy) - 1
 	var tx := fx - int(fx)
 	var ty := fy - int(fy)
-	var row := PackedFloat32Array()
-	row.resize(4)
-	for i in range(4):
-		var xi := clampi(x0 + i, 0, w - 1)
-		var col := PackedFloat32Array()
-		col.resize(4)
-		for j in range(4):
-			var yj := clampi(y0 + j, 0, h - 1)
-			col[j] = data[yj * w + xi]
-		row[i] = _catmull1(col[0], col[1], col[2], col[3], ty)
-	return _catmull1(row[0], row[1], row[2], row[3], tx)
+	var ya := clampi(y0, 0, h - 1)
+	var yb := clampi(y0 + 1, 0, h - 1)
+	var yc := clampi(y0 + 2, 0, h - 1)
+	var yd := clampi(y0 + 3, 0, h - 1)
+	var xa := clampi(x0, 0, w - 1)
+	var xb := clampi(x0 + 1, 0, w - 1)
+	var xc := clampi(x0 + 2, 0, w - 1)
+	var xd := clampi(x0 + 3, 0, w - 1)
+	var r0 := _catmull1(data[ya * w + xa], data[yb * w + xa], data[yc * w + xa], data[yd * w + xa], ty)
+	var r1 := _catmull1(data[ya * w + xb], data[yb * w + xb], data[yc * w + xb], data[yd * w + xb], ty)
+	var r2 := _catmull1(data[ya * w + xc], data[yb * w + xc], data[yc * w + xc], data[yd * w + xc], ty)
+	var r3 := _catmull1(data[ya * w + xd], data[yb * w + xd], data[yc * w + xd], data[yd * w + xd], ty)
+	return _catmull1(r0, r1, r2, r3, tx)
 
 
 func height_at(p: Vector2) -> float:
