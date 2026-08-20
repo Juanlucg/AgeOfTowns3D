@@ -83,6 +83,10 @@ const MOUNTAIN_LAKE_H_MIN := 3.0      # altura del sitio (entre las sierras)
 const MOUNTAIN_LAKE_H_MAX := 6.5
 const MOUNTAIN_LAKE_NEAR := 14.0      # radio para buscar una montaña cercana
 const MOUNTAIN_LAKE_NEAR_H := 4.0     # altura que cuenta como montaña cercana
+const MOUNTAIN_LAKE_FOREST_H := 2.6   # altura del bosque: la abertura se orienta ahi
+const MOUNTAIN_LAKE_GAP_ANGLE := 30.0 # medio angulo del cono de abertura (grados)
+const MOUNTAIN_LAKE_WATER_FADE := 6.5 # longitud media de la bahia que sale del lago (u.m.)
+const MOUNTAIN_LAKE_GAP_MAX_LEN := 48.0 # longitud maxima del valle (u.m.)
 
 # Suavizado final del relieve
 const SMOOTH_RADIUS := 2
@@ -358,6 +362,10 @@ func _generate() -> void:
 	lake_shape.seed = SEED + 9
 	lake_shape.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
 	lake_shape.frequency = 0.16
+	var shore_shape := FastNoiseLite.new()
+	shore_shape.seed = SEED + 12
+	shore_shape.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+	shore_shape.frequency = 0.25
 	for attempt in range(400):
 		var px := lake_rng.randi_range(20, _width - 21)
 		var py := lake_rng.randi_range(20, _height - 21)
@@ -407,6 +415,53 @@ func _generate() -> void:
 				heights[j * _width + i] = target
 				_wl_px[j * _width + i] = MOUNTAIN_LAKE_WL
 				_lake_px[j * _width + i] = 1
+
+		# --- Abertura hacia el bosque: se quita la sierra del lado que da al
+		# terreno mas bajo (bosque/llanura) con un cono ancho, para que el lago
+		# no quede encerrado del todo entre montañas. El cono baja la pared del
+		# borde del lago en ese sector (desde la orilla hasta el bosque) y la
+		# boca queda bajo el agua (pequeno vertido).
+		var gap_dir := _lake_gap_direction(heights, center, radius_u)
+		var gap_len := clampf(_lake_gap_length(heights, center, radius_u, gap_dir), 10.0, MOUNTAIN_LAKE_GAP_MAX_LEN)
+		var gbox := int((radius_u + gap_len + 4.0) * 1.3 * _px_per_unit) + 2
+		var gx0 := maxi(0, int(center.x) - gbox)
+		var gx1 := mini(_width - 1, int(center.x) + gbox)
+		var gy0 := maxi(0, int(center.y) - gbox)
+		var gy1 := mini(_height - 1, int(center.y) + gbox)
+		for j in range(gy0, gy1 + 1):
+			for i in range(gx0, gx1 + 1):
+				var p := Vector2(i, j)
+				var d_u: float = p.distance_to(center) / _px_per_unit
+				var nv := lake_shape.get_noise_2d(float(i) / _px_per_unit * 1.3, float(j) / _px_per_unit * 0.8)
+				var rr := radius_u * (1.0 + 0.5 * nv)
+				if d_u <= rr * 0.5:
+					continue
+				var off := p - center
+				var along_u := off.dot(gap_dir) / _px_per_unit
+				var ang_deg := rad_to_deg(acos(clampf(off.normalized().dot(gap_dir), -1.0, 1.0)))
+				if ang_deg > MOUNTAIN_LAKE_GAP_ANGLE:
+					continue
+				if along_u > radius_u + gap_len:
+					continue
+				var idx := j * _width + i
+				var orig: float = heights[idx]
+				var sw := _smoothstep(clampf(1.0 - ang_deg / MOUNTAIN_LAKE_GAP_ANGLE, 0.0, 1.0))
+				# Borde exterior del agua: sigue el ruido de la orilla (curvas)
+				# con amplitud suave, para que la bahia sea continua y sin islas.
+				var shore := shore_shape.get_noise_2d(float(i) / _px_per_unit, float(j) / _px_per_unit)
+				var bay_end := radius_u + MOUNTAIN_LAKE_WATER_FADE * clampf(1.0 + 0.5 * shore, 0.7, 1.5)
+				if along_u < bay_end:
+					# Dentro de la bahia: suelo plano bajo el agua (un solo
+					# cuerpo de agua, sin trozos sueltos).
+					var floor_h := minf(orig, MOUNTAIN_LAKE_WL - 0.2)
+					heights[idx] = minf(orig, lerpf(orig, floor_h, sw))
+					_wl_px[idx] = MOUNTAIN_LAKE_WL
+					_lake_px[idx] = 1
+				else:
+					# Valle seco: del borde del agua hacia el bosque.
+					var u := clampf((along_u - bay_end) / 4.0, 0.0, 1.0)
+					var floor_h := lerpf(MOUNTAIN_LAKE_WL + 0.15, orig, _smoothstep(u))
+					heights[idx] = minf(orig, lerpf(orig, floor_h, sw))
 		break
 
 	# --- Nivel de agua suavizado: se difumina _wl_px para que el borde de
@@ -761,6 +816,40 @@ func _highest_pixel(heights: PackedFloat32Array) -> int:
 
 func _smoothstep(t: float) -> float:
 	return t * t * (3.0 - 2.0 * t)
+
+
+# Direccion de la abertura del lago de montaña: hacia el bosque (el terreno mas
+# bajo que se encuentra al salir de la sierra), para que el valle se abra al
+# terreno llano y no a otra pared de montaña.
+func _lake_gap_direction(heights: PackedFloat32Array, center: Vector2, radius_u: float) -> Vector2:
+	var steps := 32
+	var best := Vector2(1.0, 0.0)
+	var best_r := 1.0e18
+	for k in range(steps):
+		var ang := TAU * k / steps
+		var d := Vector2(cos(ang), sin(ang))
+		var r := -1.0
+		for rr in range(int(radius_u) + 2, int(radius_u) + int(MOUNTAIN_LAKE_GAP_MAX_LEN)):
+			var p := center + d * (float(rr) * _px_per_unit)
+			var idx := clampi(int(round(p.y)), 0, _height - 1) * _width + clampi(int(round(p.x)), 0, _width - 1)
+			if heights[idx] < MOUNTAIN_LAKE_FOREST_H:
+				r = float(rr)
+				break
+		if r >= 0.0 and r < best_r:
+			best_r = r
+			best = d
+	return best
+
+
+# Longitud del valle: hasta el borde del bosque mas un margen, para que el
+# suelo del valle termine ya en terreno bajo (se abre del todo al bosque).
+func _lake_gap_length(heights: PackedFloat32Array, center: Vector2, radius_u: float, dir: Vector2) -> float:
+	for rr in range(int(radius_u) + 2, int(radius_u) + int(MOUNTAIN_LAKE_GAP_MAX_LEN)):
+		var p := center + dir * (float(rr) * _px_per_unit)
+		var idx := clampi(int(round(p.y)), 0, _height - 1) * _width + clampi(int(round(p.x)), 0, _width - 1)
+		if heights[idx] < MOUNTAIN_LAKE_FOREST_H:
+			return float(rr) - radius_u + 6.0
+	return MOUNTAIN_LAKE_GAP_MAX_LEN
 
 
 func _distance_field(inside: PackedByteArray) -> PackedFloat32Array:

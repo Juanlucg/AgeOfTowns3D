@@ -6,6 +6,7 @@
 [ext_resource type="Script" path="res://scripts/Vegetation.gd" id="4_veg"]
 [ext_resource type="Script" path="res://scripts/Rocks.gd" id="5_rocks"]
 [ext_resource type="Script" path="res://scripts/Minimap.gd" id="6_minimap"]
+[ext_resource type="Script" path="res://scripts/HUD.gd" id="8_hud"]
 
 [node name="Main" type="Node3D"]
 
@@ -40,3 +41,6 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("6_minimap")
+
+[node name="HUD" type="CanvasLayer" parent="."]
+script = ExtResource("8_hud")

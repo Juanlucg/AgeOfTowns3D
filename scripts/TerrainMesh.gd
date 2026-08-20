@@ -106,10 +106,11 @@ func _apply_material() -> void:
 
 		const vec3 C_WATER_DEEP = vec3(0.07, 0.22, 0.42);
 		const vec3 C_BEACH = vec3(0.85, 0.78, 0.55);
-		const vec3 C_PLAINS = vec3(0.42, 0.60, 0.30);
-		const vec3 C_FOREST = vec3(0.20, 0.38, 0.16);
 		const vec3 C_ROCK = vec3(0.48, 0.46, 0.42);
-		const vec3 C_SNOW = vec3(0.94, 0.95, 0.97);
+		uniform vec3 u_plains = vec3(0.42, 0.60, 0.30);
+		uniform vec3 u_forest = vec3(0.20, 0.38, 0.16);
+		uniform vec3 u_snow = vec3(0.94, 0.95, 0.97);
+		uniform float u_snow_level = 7.0;
 
 		varying vec4 custom0;
 
@@ -124,15 +125,15 @@ func _apply_material() -> void:
 
 			vec3 land = C_BEACH;
 			float t_plains = smoothstep(0.28, 0.36, h);
-			land = mix(land, C_PLAINS, t_plains);
+			land = mix(land, u_plains, t_plains);
 			float t_rock = smoothstep(2.6, 2.75, h);
 			land = mix(land, C_ROCK, t_rock);
-			float t_snow = smoothstep(7.0, 7.15, h);
-			land = mix(land, C_SNOW, t_snow);
+			float t_snow = smoothstep(u_snow_level, u_snow_level + 0.15, h);
+			land = mix(land, u_snow, t_snow);
 			float plains_lo = smoothstep(0.36, 0.5, h);
 			float plains_hi = smoothstep(2.45, 2.3, h);
 			float t_forest = plains_lo * plains_hi * smoothstep(0.06, 0.10, forest);
-			land = mix(land, C_FOREST, t_forest);
+			land = mix(land, u_forest, t_forest);
 
 			// Agua de un solo color plano: sin gradiente, sin espuma. El borde
 			// es una transicion ANCHA (suave, como orilla mojada) para que la

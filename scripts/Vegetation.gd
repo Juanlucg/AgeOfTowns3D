@@ -19,6 +19,30 @@ const PINE_COLOR := Color(0.16, 0.32, 0.14)
 const ROUND_COLOR := Color(0.26, 0.43, 0.19)
 const BUSH_COLOR := Color(0.30, 0.46, 0.20)
 
+# Tinte del follaje por estacion (Primavera, Verano, Otono, Invierno)
+const LEAF_TINT_PINE := [
+	Color(0.95, 1.05, 0.95),
+	Color(1.0, 1.0, 1.0),
+	Color(0.85, 0.72, 0.50),
+	Color(0.55, 0.68, 0.55),
+]
+const LEAF_TINT_ROUND := [
+	Color(0.95, 1.05, 0.95),
+	Color(1.0, 1.0, 1.0),
+	Color(1.15, 0.60, 0.28),
+	Color(0.55, 0.42, 0.34),
+]
+const LEAF_TINT_BUSH := [
+	Color(0.95, 1.05, 0.95),
+	Color(1.0, 1.0, 1.0),
+	Color(1.05, 0.65, 0.30),
+	Color(0.60, 0.52, 0.38),
+]
+
+var _pine_mat: ShaderMaterial
+var _round_mat: ShaderMaterial
+var _bush_mat: ShaderMaterial
+
 
 func _ready() -> void:
 	var pine := _build_pine()
@@ -100,11 +124,41 @@ func _add_multimesh(mesh: ArrayMesh, transforms: Array[Transform3D]) -> void:
 	add_child(mi)
 
 
-func _material() -> StandardMaterial3D:
-	var mat := StandardMaterial3D.new()
-	mat.vertex_color_use_as_albedo = true
-	mat.roughness = 1.0
+func _material(foliage_y: float) -> ShaderMaterial:
+	var shader := Shader.new()
+	shader.code = """
+		shader_type spatial;
+		uniform vec3 u_tint : source_color = vec3(1.0, 1.0, 1.0);
+		uniform float u_foliage_y = 0.3;
+		varying vec3 vcol;
+		varying float vy;
+		void vertex() {
+			vcol = COLOR.rgb;
+			vy = VERTEX.y;
+		}
+		void fragment() {
+			float f = smoothstep(u_foliage_y - 0.1, u_foliage_y + 0.1, vy);
+			ALBEDO = vcol * mix(vec3(1.0), u_tint, f);
+			ROUGHNESS = 1.0;
+		}
+	"""
+	var mat := ShaderMaterial.new()
+	mat.shader = shader
+	mat.set_shader_parameter("u_foliage_y", foliage_y)
 	return mat
+
+
+func apply_season(season: int, k: float) -> void:
+	_pine_mat.set_shader_parameter("u_tint", _tint(LEAF_TINT_PINE, season, k))
+	_round_mat.set_shader_parameter("u_tint", _tint(LEAF_TINT_ROUND, season, k))
+	_bush_mat.set_shader_parameter("u_tint", _tint(LEAF_TINT_BUSH, season, k))
+
+
+func _tint(values: Array, season: int, k: float) -> Vector3:
+	var s: Color = values[season] as Color
+	var n: Color = values[(season + 1) % values.size()] as Color
+	var c: Color = s.lerp(n, k)
+	return Vector3(c.r, c.g, c.b)
 
 
 func _build_pine() -> ArrayMesh:
@@ -116,7 +170,8 @@ func _build_pine() -> ArrayMesh:
 	_add_frustum(st, 1.25, 2.25, 0.26, 0.02, 6, PINE_COLOR)
 	st.generate_normals()
 	var mesh := st.commit()
-	mesh.surface_set_material(0, _material())
+	_pine_mat = _material(0.42)
+	mesh.surface_set_material(0, _pine_mat)
 	return mesh
 
 
@@ -128,7 +183,8 @@ func _build_round() -> ArrayMesh:
 	_add_frustum(st, 0.85, 1.85, 0.28, 0.02, 7, ROUND_COLOR)
 	st.generate_normals()
 	var mesh := st.commit()
-	mesh.surface_set_material(0, _material())
+	_round_mat = _material(0.42)
+	mesh.surface_set_material(0, _round_mat)
 	return mesh
 
 
@@ -138,7 +194,8 @@ func _build_bush() -> ArrayMesh:
 	_add_dome(st, 0.4, 0.8, BUSH_COLOR, 4, 7)
 	st.generate_normals()
 	var mesh := st.commit()
-	mesh.surface_set_material(0, _material())
+	_bush_mat = _material(0.0)
+	mesh.surface_set_material(0, _bush_mat)
 	return mesh
 
 
