@@ -12,7 +12,7 @@ extends Node3D
 #   Q / E            -> rotar la vista
 
 @export var map_corner_min: Vector2 = Vector2(0.0, 0.0)
-@export var map_corner_max: Vector2 = Vector2(200.0, 200.0)
+@export var map_corner_max: Vector2 = Vector2.ZERO   # si queda en cero, se toma el tamano del mapa
 
 const YAW_DEFAULT := 0.0
 const PITCH_DEFAULT := 55.0
@@ -41,6 +41,8 @@ var _pitch_before := 0.0
 func _ready() -> void:
 	_cam = $Camera3D
 	_cam.current = true
+	if map_corner_max == Vector2.ZERO:
+		map_corner_max = Vector2(Terrain.WORLD_SIZE, Terrain.WORLD_SIZE)
 	position = Vector3((map_corner_min.x + map_corner_max.x) * 0.5, 0.0, (map_corner_min.y + map_corner_max.y) * 0.5)
 	_apply()
 
@@ -133,6 +135,12 @@ func screen_to_ground(screen_pos: Vector2) -> Vector2:
 	var ray: Vector3 = _cam.project_ray_normal(screen_pos)
 	var hit := _march(origin, ray)
 	return Vector2(clampf(hit.x, map_corner_min.x - BORDER, map_corner_max.x + BORDER), clampf(hit.z, map_corner_min.y - BORDER, map_corner_max.y + BORDER))
+
+
+# Mueve el punto observado al suelo indicado (p.ej. clic en el minimapa).
+func move_to(ground: Vector2) -> void:
+	position = Vector3(ground.x, 0.0, ground.y)
+	_apply()
 
 
 func _march(origin: Vector3, ray: Vector3) -> Vector3:

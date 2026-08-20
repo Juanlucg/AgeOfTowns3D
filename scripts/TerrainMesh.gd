@@ -4,7 +4,7 @@ extends MeshInstance3D
 # de cada bioma con smoothstep: transiciones infinitamente suaves y sin
 # resolucion de textura, nitidas a cualquier zoom.
 
-const CELL := 0.3
+const CELL := 0.45
 
 
 func _ready() -> void:

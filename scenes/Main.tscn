@@ -1,10 +1,11 @@
-[gd_scene load_steps=6 format=3]
+[gd_scene load_steps=7 format=3]
 
 [ext_resource type="Script" path="res://scripts/TerrainMesh.gd" id="1_mesh"]
 [ext_resource type="Script" path="res://scripts/CameraController3D.gd" id="2_cam"]
 [ext_resource type="Script" path="res://scripts/DayNightCycle.gd" id="3_day"]
 [ext_resource type="Script" path="res://scripts/Vegetation.gd" id="4_veg"]
 [ext_resource type="Script" path="res://scripts/Rocks.gd" id="5_rocks"]
+[ext_resource type="Script" path="res://scripts/Minimap.gd" id="6_minimap"]
 
 [node name="Main" type="Node3D"]
 
@@ -30,3 +31,12 @@ script = ExtResource("4_veg")
 
 [node name="Rocks" type="Node3D" parent="."]
 script = ExtResource("5_rocks")
+
+[node name="MinimapLayer" type="CanvasLayer" parent="."]
+
+[node name="Minimap" type="Control" parent="MinimapLayer"]
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("6_minimap")

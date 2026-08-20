@@ -14,9 +14,9 @@ extends Node
 #
 # Al ser matematico, la resolucion es infinita: hacer zoom nunca da pixelado.
 
-const WORLD_SIZE := 200.0
+const WORLD_SIZE := 300.0
 const WORLD_SCALE := WORLD_SIZE / 100.0
-const WORK_RES := 512
+const WORK_RES := 768
 const SEED := 424242
 
 # Nivel del mar y bandas de bioma
@@ -72,6 +72,8 @@ const RIVER_NOISE := 0.10         # pequena aleatoriedad en el trazado
 const RIVER_MOUTH_PULL := 0.6     # atraccion del cauce hacia la boca elegida
 const RIVER_MEANDER_AMP_U := 1.5  # amplitud base de los meandros, en u.m.
 const RIVER_MEANDER_LEN_U := 8.0  # longitud de onda base de los meandros, en u.m.
+const RIVER_MOUTH_FADE_U := 12.0  # longitud del cauce en la que se funde con el mar, en u.m.
+const RIVER_MOUTH_BED := -0.12    # profundidad del cauce justo en la desembocadura
 const RIVER_MAX_STEPS := 3000
 
 # Lago de montaña: un solo lago, medio, irregular y elevado entre las sierras
@@ -261,16 +263,31 @@ func _generate() -> void:
 	var river_dist := _distance_field(meander_mask)
 	var half_px := RIVER_HALF_WIDTH_U * _px_per_unit
 	var rtotal: float = meander.cum[meander.cum.size() - 1]
+	# Fraccion del cauce (al final) dedicada a fundir la desembocadura con el mar
+	var mouth_frac := 1.0
+	if rtotal > 0.0:
+		mouth_frac = clampf(RIVER_MOUTH_FADE_U * _px_per_unit / rtotal, 0.0, 1.0)
 	for idx in range(n):
 		var rd: float = river_dist[idx]
-		if rd < half_px:
+		if rd >= half_px * 2.5:
+			continue
+		var p := Vector2(idx % _width, idx / _width)
+		var s := _along_fraction(p, meander.points, meander.cum, rtotal)
+		# Cerca de la desembocadura el cauce se ensancha, se hace poco profundo
+		# y su nivel de agua baja hasta el nivel del mar: sin escalon submarino
+		# ni "linea" entre el agua del rio y la del mar.
+		var mf := _smoothstep(clampf((s - (1.0 - mouth_frac)) / mouth_frac, 0.0, 1.0))
+		var hp := half_px * (1.0 + 1.5 * mf)
+		if rd < hp:
+			var bank: float = heights[idx]
+			var bed := bank - RIVER_CARVE * _smoothstep(1.0 - rd / hp)
+			bed = lerpf(bed, RIVER_MOUTH_BED, mf)
+			heights[idx] = bed
 			# El nivel de agua del cauce declina desde el lago (s=0) hasta el
 			# mar (s=1), y nunca supera la orilla (sin inundar).
-			var bank: float = heights[idx]
-			var p := Vector2(idx % _width, idx / _width)
-			var s := _along_fraction(p, meander.points, meander.cum, rtotal)
-			_wl_px[idx] = minf(lerpf(lake_wl, SEA_LEVEL, s), bank - RIVER_WATER_MARGIN)
-			heights[idx] = bank - RIVER_CARVE * _smoothstep(1.0 - rd / half_px)
+			var wl := minf(lerpf(lake_wl, SEA_LEVEL, s), bank - RIVER_WATER_MARGIN)
+			wl = lerpf(wl, SEA_LEVEL, mf)
+			_wl_px[idx] = wl
 
 	# --- Lago de nacimiento: pequeno lago hundido al pie de la montaña, del
 	# que nace el rio ---
@@ -924,6 +941,43 @@ func biome_color(c: int, h: float) -> Color:
 			return COLOR_SNOW
 		_:
 			return COLOR_PLAINS
+
+
+func make_minimap_texture(tex_size: int) -> ImageTexture:
+	# Textura de vision general a partir de los datos del terreno ya generado:
+	# color de bioma + sombreado de relieve con luz desde el noroeste.
+	if _width == 0:
+		return ImageTexture.create_from_image(Image.create(tex_size, tex_size, false, Image.FORMAT_RGB8))
+	var step := WORLD_SIZE / float(tex_size)
+	var hs := PackedFloat32Array()
+	hs.resize(tex_size * tex_size)
+	for j in range(tex_size):
+		for i in range(tex_size):
+			var px := clampi(int(float(i) / tex_size * _width), 0, _width - 1)
+			var py := clampi(int(float(j) / tex_size * _height), 0, _height - 1)
+			hs[j * tex_size + i] = _height_px[py * _width + px]
+	var img := Image.create(tex_size, tex_size, false, Image.FORMAT_RGB8)
+	var light := Vector3(-0.55, 0.8, -0.35).normalized()
+	for j in range(tex_size):
+		for i in range(tex_size):
+			var px := clampi(int(float(i) / tex_size * _width), 0, _width - 1)
+			var py := clampi(int(float(j) / tex_size * _height), 0, _height - 1)
+			var idx := py * _width + px
+			var c: int = _class_px[idx]
+			var h: float = _height_px[idx]
+			var col := biome_color(c, h)
+			if c != CLASS_WATER:
+				var il := maxi(0, i - 1)
+				var ir := mini(tex_size - 1, i + 1)
+				var jt := maxi(0, j - 1)
+				var jb := mini(tex_size - 1, j + 1)
+				var dzx := (hs[j * tex_size + ir] - hs[j * tex_size + il]) / step
+				var dzy := (hs[jb * tex_size + i] - hs[jt * tex_size + i]) / step
+				var nrm := Vector3(-dzx, 1.0, -dzy).normalized()
+				var shade := clampf(0.58 + 0.42 * light.dot(nrm), 0.0, 1.0)
+				col *= shade
+			img.set_pixel(i, j, col)
+	return ImageTexture.create_from_image(img)
 
 
 func distance_to_water(p: Vector2) -> float:
