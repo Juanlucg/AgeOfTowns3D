@@ -17,6 +17,7 @@ config/features=PackedStringArray("4.7", "GL Compatibility")
 [autoload]
 
 Terrain="*res://scripts/Terrain.gd"
+Economy="*res://scripts/Economy.gd"
 
 [display]
 

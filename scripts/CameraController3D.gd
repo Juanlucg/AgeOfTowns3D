@@ -15,7 +15,7 @@ extends Node3D
 @export var map_corner_max: Vector2 = Vector2.ZERO   # si queda en cero, se toma el tamano del mapa
 
 const YAW_DEFAULT := 0.0
-const PITCH_DEFAULT := 70.0
+const PITCH_DEFAULT := 30.0
 const PITCH_MIN := 12.0
 const PITCH_MAX := 82.0
 const ZOOM_MIN := 6.0

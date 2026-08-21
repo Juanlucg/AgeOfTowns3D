@@ -93,6 +93,18 @@ func _add_multimesh(mesh: ArrayMesh, transforms: Array[Transform3D]) -> void:
 	add_child(mi)
 
 
+func clear_near(world_pos: Vector2, radius: float) -> void:
+	for c in get_children():
+		if c is MultiMeshInstance3D:
+			var mm: MultiMesh = c.multimesh
+			for i in mm.instance_count:
+				var t: Transform3D = mm.get_instance_transform(i)
+				var dx: float = t.origin.x - world_pos.x
+				var dz: float = t.origin.z - world_pos.y
+				if sqrt(dx * dx + dz * dz) < radius:
+					mm.set_instance_transform(i, t.translated(Vector3(0, -50, 0)))
+
+
 func _material() -> StandardMaterial3D:
 	var mat := StandardMaterial3D.new()
 	mat.vertex_color_use_as_albedo = true

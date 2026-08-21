@@ -154,6 +154,18 @@ func apply_season(season: int, k: float) -> void:
 	_bush_mat.set_shader_parameter("u_tint", _tint(LEAF_TINT_BUSH, season, k))
 
 
+func clear_near(world_pos: Vector2, radius: float) -> void:
+	for c in get_children():
+		if c is MultiMeshInstance3D:
+			var mm: MultiMesh = c.multimesh
+			for i in mm.instance_count:
+				var t: Transform3D = mm.get_instance_transform(i)
+				var dx: float = t.origin.x - world_pos.x
+				var dz: float = t.origin.z - world_pos.y
+				if sqrt(dx * dx + dz * dz) < radius:
+					mm.set_instance_transform(i, t.translated(Vector3(0, -50, 0)))
+
+
 func _tint(values: Array, season: int, k: float) -> Vector3:
 	var s: Color = values[season] as Color
 	var n: Color = values[(season + 1) % values.size()] as Color

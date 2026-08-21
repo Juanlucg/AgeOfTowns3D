@@ -1,7 +1,7 @@
 extends CanvasLayer
-# Interfaz de estado global (esquina superior izquierda). Muestra la hora del
-# dia, el dia del calendario y la estacion. Se ampliara con mas informacion
-# en el futuro (recursos, poblacion, etc.).
+# Interfaz de estado global (esquina superior izquierda): hora del dia, dia,
+# estacion, clima y panel de economia (recursos y almacenamiento). Los
+# recursos se refrescan con la señal "changed" de Economy.
 
 const SEASON_COLORS := [
 	Color(0.45, 0.78, 0.35),  # primavera: verde
@@ -9,6 +9,7 @@ const SEASON_COLORS := [
 	Color(0.88, 0.48, 0.15),  # otono: naranja
 	Color(0.62, 0.78, 0.92),  # invierno: azul claro
 ]
+const MSG_TIME_MS := 2800
 
 var _day: Node
 var _season_color: ColorRect
@@ -18,6 +19,11 @@ var _time_label: Label
 var _phase_label: Label
 var _weather_label: Label
 var _last_key := ""
+var _res_labels := {}
+var _storage_bar: ProgressBar
+var _storage_label: Label
+var _msg_label: Label
+var _msg_timer: Timer
 
 
 func _ready() -> void:
@@ -51,7 +57,55 @@ func _ready() -> void:
 	_weather_label = _label(14)
 	vbox.add_child(_weather_label)
 
+	vbox.add_child(HSeparator.new())
+
+	for k in Economy.RESOURCE_NAMES:
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 8)
+		vbox.add_child(row)
+		var dot := ColorRect.new()
+		dot.custom_minimum_size = Vector2(12, 12)
+		dot.color = Economy.RESOURCE_COLORS[k]
+		row.add_child(dot)
+		var l := _label(14)
+		row.add_child(l)
+		_res_labels[k] = l
+
+	var store_row := HBoxContainer.new()
+	store_row.add_theme_constant_override("separation", 8)
+	vbox.add_child(store_row)
+	_storage_label = _label(14)
+	store_row.add_child(_storage_label)
+	_storage_bar = ProgressBar.new()
+	_storage_bar.custom_minimum_size = Vector2(150, 14)
+	_storage_bar.show_percentage = false
+	store_row.add_child(_storage_bar)
+
+	var hint := _label(12)
+	hint.text = "1-4: elegir edificio (menu inferior)"
+	hint.add_theme_color_override("font_color", Color(1, 1, 1, 0.7))
+	vbox.add_child(hint)
+
+	_msg_label = _label(14)
+	_msg_label.visible = false
+	_msg_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.5))
+	vbox.add_child(_msg_label)
+
+	_msg_timer = Timer.new()
+	_msg_timer.one_shot = true
+	_msg_timer.wait_time = MSG_TIME_MS / 1000.0
+	_msg_timer.timeout.connect(func(): _msg_label.visible = false)
+	add_child(_msg_timer)
+
+	Economy.changed.connect(_update_resources)
 	_update()
+	_update_resources()
+
+
+func show_message(text: String) -> void:
+	_msg_label.text = text
+	_msg_label.visible = true
+	_msg_timer.start()
 
 
 func _panel_style() -> StyleBoxFlat:
@@ -91,6 +145,16 @@ func _update() -> void:
 	_time_label.text = _fmt_hour(_day.get_hour())
 	_phase_label.text = _phase(_day.get_hour())
 	_weather_label.text = _day.get_weather_name()
+
+
+func _update_resources() -> void:
+	for k in Economy.RESOURCE_NAMES:
+		(_res_labels[k] as Label).text = "%s  %d" % [k.capitalize(), int(Economy.amounts[k])]
+	var used := int(Economy.storage_used())
+	var cap := int(Economy.storage_capacity())
+	_storage_bar.max_value = cap
+	_storage_bar.value = used
+	_storage_label.text = "Almacen %d/%d" % [used, cap]
 
 
 func _fmt_hour(h: float) -> String:

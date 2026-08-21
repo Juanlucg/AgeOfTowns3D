@@ -1,46 +1,56 @@
-[gd_scene load_steps=7 format=3]
+[gd_scene format=3 uid="uid://bj3wrwjjmr1yx"]
 
-[ext_resource type="Script" path="res://scripts/TerrainMesh.gd" id="1_mesh"]
-[ext_resource type="Script" path="res://scripts/CameraController3D.gd" id="2_cam"]
-[ext_resource type="Script" path="res://scripts/DayNightCycle.gd" id="3_day"]
-[ext_resource type="Script" path="res://scripts/Vegetation.gd" id="4_veg"]
-[ext_resource type="Script" path="res://scripts/Rocks.gd" id="5_rocks"]
-[ext_resource type="Script" path="res://scripts/Minimap.gd" id="6_minimap"]
-[ext_resource type="Script" path="res://scripts/HUD.gd" id="8_hud"]
+[ext_resource type="Script" uid="uid://b4srweb1ik1io" path="res://scripts/TerrainMesh.gd" id="1_mesh"]
+[ext_resource type="Script" uid="uid://sgbtfyi6k1h8" path="res://scripts/CameraController3D.gd" id="2_cam"]
+[ext_resource type="Script" uid="uid://doke7ay6xh328" path="res://scripts/DayNightCycle.gd" id="3_day"]
+[ext_resource type="Script" uid="uid://d00kkdqjj54hf" path="res://scripts/Vegetation.gd" id="4_veg"]
+[ext_resource type="Script" uid="uid://bmij5glm74elr" path="res://scripts/Rocks.gd" id="5_rocks"]
+[ext_resource type="Script" uid="uid://ddwexmidr1wvl" path="res://scripts/Minimap.gd" id="6_minimap"]
+[ext_resource type="Script" uid="uid://c0ubxnwo725t5" path="res://scripts/Buildings.gd" id="7_build"]
+[ext_resource type="Script" uid="uid://dqmn4la1ff0rh" path="res://scripts/HUD.gd" id="8_hud"]
+[ext_resource type="Script" uid="uid://bwrau7rfak1y3" path="res://scripts/BuildMenu.gd" id="10_menu"]
 
-[node name="Main" type="Node3D"]
+[node name="Main" type="Node3D" unique_id=1696096527]
 
-[node name="Sun" type="DirectionalLight3D" parent="."]
+[node name="Sun" type="DirectionalLight3D" parent="." unique_id=1382638242]
 transform = Transform3D(0.7071068, -0.5, 0.5, 0, 0.7071068, 0.7071068, -0.7071068, -0.5, 0.5, 0, 12, 0)
 shadow_enabled = true
 
-[node name="Ground" type="MeshInstance3D" parent="."]
+[node name="Ground" type="MeshInstance3D" parent="." unique_id=1678041047]
 script = ExtResource("1_mesh")
 
-[node name="CameraRig" type="Node3D" parent="."]
+[node name="CameraRig" type="Node3D" parent="." unique_id=543882290]
 script = ExtResource("2_cam")
 
-[node name="Camera3D" type="Camera3D" parent="CameraRig"]
+[node name="Camera3D" type="Camera3D" parent="CameraRig" unique_id=373425901]
 current = true
 fov = 45.0
 
-[node name="DayNightCycle" type="Node3D" parent="."]
+[node name="DayNightCycle" type="Node3D" parent="." unique_id=1664011204]
 script = ExtResource("3_day")
 
-[node name="Vegetation" type="Node3D" parent="."]
+[node name="Vegetation" type="Node3D" parent="." unique_id=1315723467]
 script = ExtResource("4_veg")
 
-[node name="Rocks" type="Node3D" parent="."]
+[node name="Rocks" type="Node3D" parent="." unique_id=1203203413]
 script = ExtResource("5_rocks")
 
-[node name="MinimapLayer" type="CanvasLayer" parent="."]
+[node name="Buildings" type="Node3D" parent="." unique_id=1881301566]
+script = ExtResource("7_build")
 
-[node name="Minimap" type="Control" parent="MinimapLayer"]
+[node name="MinimapLayer" type="CanvasLayer" parent="." unique_id=22199242]
+
+[node name="Minimap" type="Control" parent="MinimapLayer" unique_id=1927966273]
+layout_mode = 3
+anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("6_minimap")
 
-[node name="HUD" type="CanvasLayer" parent="."]
+[node name="HUD" type="CanvasLayer" parent="." unique_id=1606477643]
 script = ExtResource("8_hud")
+
+[node name="BuildMenu" type="CanvasLayer" parent="." unique_id=829077859]
+script = ExtResource("10_menu")
