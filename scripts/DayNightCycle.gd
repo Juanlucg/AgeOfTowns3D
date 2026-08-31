@@ -265,6 +265,7 @@ func _make_particles(mesh: QuadMesh, pm: ParticleProcessMaterial, sx: float, sy:
 	p.process_material = pm
 	p.amount = 1
 	p.emitting = false
+	p.visible = false
 	p.lifetime = 2.0
 	p.position = Vector3(half, 30.0, half)
 	p.visibility_aabb = AABB(Vector3(-half, -40.0, -half), Vector3(half * 3.0, 80.0, half * 3.0))
@@ -420,6 +421,10 @@ func _apply_weather() -> void:
 		_rain.lifetime = 1.6
 		_rain.amount = int(RAIN_PARTICLES * rain)
 		_rain.emitting = true
+		_rain.visible = true
+	else:
+		_rain.emitting = false
+		_rain.visible = false
 	if snow > 0.001:
 		var pm := _snow.process_material as ParticleProcessMaterial
 		pm.gravity = Vector3(0.0, -3.5, 0.0)
@@ -431,6 +436,10 @@ func _apply_weather() -> void:
 		_snow.lifetime = 10.0
 		_snow.amount = int(SNOW_PARTICLES * snow)
 		_snow.emitting = true
+		_snow.visible = true
+	else:
+		_snow.emitting = false
+		_snow.visible = false
 
 
 func _v(c: Color) -> Vector3:
