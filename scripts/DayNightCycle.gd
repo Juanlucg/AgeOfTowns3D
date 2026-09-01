@@ -98,8 +98,8 @@ const FOG_COLOR_BY_SEASON := [
 const RAIN_BY_SEASON := [0.30, 0.15, 0.55, 0.0]
 const SNOW_BY_SEASON := [0.0, 0.0, 0.0, 0.85]
 
-const RAIN_PARTICLES := 4500
-const SNOW_PARTICLES := 2600
+const RAIN_PARTICLES := 28000
+const SNOW_PARTICLES := 18000
 
 const SKY_SHADER_CODE := """
 shader_type sky;
@@ -196,6 +196,17 @@ var _terrain_mat: ShaderMaterial
 var _veg: Node
 var _rain: GPUParticles3D
 var _snow: GPUParticles3D
+var _rain_splash: GPUParticles3D
+var _cam_rig: Node3D
+
+# --- Herramientas dev ---
+var dev_paused := false
+var _dev_weather_override := "despejado"  # ""=auto, "despejado"/"lluvia"/"nieve" — inicia despejado
+
+# Acumulacion visual de nieve y mojado por lluvia
+var _snow_cover := 0.0  # 0..0.55 fina capa
+var _wet_amount := 0.0
+var _rain_ripple := 0.0
 
 
 func _ready() -> void:
@@ -238,14 +249,17 @@ func _ready() -> void:
 	if ground != null:
 		_terrain_mat = ground.get_surface_override_material(0) as ShaderMaterial
 	_veg = get_parent().get_node_or_null("Vegetation")
+	_cam_rig = get_parent().get_node_or_null("CameraRig")
 	_setup_weather()
 
 
 func _setup_weather() -> void:
-	_rain = _make_particles(QuadMesh.new(), ParticleProcessMaterial.new(), 0.05, 0.6, RAIN_PARTICLES)
-	_snow = _make_particles(QuadMesh.new(), ParticleProcessMaterial.new(), 0.22, 0.22, SNOW_PARTICLES)
+	_rain = _make_particles(QuadMesh.new(), ParticleProcessMaterial.new(), 0.05, 1.5, RAIN_PARTICLES)
+	_snow = _make_particles(QuadMesh.new(), ParticleProcessMaterial.new(), 0.38, 0.38, SNOW_PARTICLES)
+	_rain_splash = _make_splash_particles()
 	get_parent().add_child.call_deferred(_rain)
 	get_parent().add_child.call_deferred(_snow)
+	get_parent().add_child.call_deferred(_rain_splash)
 
 
 func _make_particles(mesh: QuadMesh, pm: ParticleProcessMaterial, sx: float, sy: float, amount: int) -> GPUParticles3D:
@@ -257,28 +271,143 @@ func _make_particles(mesh: QuadMesh, pm: ParticleProcessMaterial, sx: float, sy:
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.vertex_color_use_as_albedo = true
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	mat.albedo_color = Color(1, 1, 1, 1)
+	# Textura con degradado: lluvia = estela vertical, nieve = punto suave
+	var is_rain := sy > sx * 1.5
+	if is_rain:
+		mat.albedo_texture = _make_streak_texture()
+	else:
+		mat.albedo_texture = _make_soft_dot_texture()
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
 	mesh.material = mat
 	p.draw_pass_1 = mesh
 	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
-	pm.emission_box_extents = Vector3(half, 30.0, half)
-	pm.lifetime_randomness = 0.3
+	pm.emission_box_extents = Vector3(half, 32.0, half)
+	pm.lifetime_randomness = 0.25
+	# Ligera inclinacion para que se vea de lado cuando la camara va rasante
+	pm.direction = Vector3(0.18, -1.0, 0.08)
+	pm.spread = 7.0
 	p.process_material = pm
 	p.amount = 1
 	p.emitting = false
 	p.visible = false
 	p.lifetime = 2.0
-	p.position = Vector3(half, 30.0, half)
-	p.visibility_aabb = AABB(Vector3(-half, -40.0, -half), Vector3(half * 3.0, 80.0, half * 3.0))
+	p.position = Vector3(half, 32.0, half)
+	p.visibility_aabb = AABB(Vector3(-half, -50.0, -half), Vector3(half * 4.0, 110.0, half * 4.0))
 	return p
 
 
+func _make_streak_texture() -> ImageTexture:
+	var img := Image.create(4, 32, false, Image.FORMAT_RGBA8)
+	for y in 32:
+		var t := float(y) / 31.0
+		# Degradado fuerte en extremos: transparente arriba/abajo, opaco centro
+		var a := 1.0 - pow(abs(t - 0.5) * 2.0, 1.6)
+		a = clampf(a, 0.0, 1.0) * 0.92
+		var c := Color(1, 1, 1, a)
+		for x in 4:
+			img.set_pixel(x, y, c)
+	var tex := ImageTexture.create_from_image(img)
+	return tex
+
+
+func _make_soft_dot_texture() -> ImageTexture:
+	var s := 32
+	var img := Image.create(s, s, false, Image.FORMAT_RGBA8)
+	var center := Vector2(s * 0.5, s * 0.5)
+	for y in s:
+		for x in s:
+			var d := Vector2(x, y).distance_to(center) / (s * 0.5)
+			var a := clampf(1.0 - pow(d, 1.8), 0.0, 1.0)
+			img.set_pixel(x, y, Color(1, 1, 1, a))
+	var tex := ImageTexture.create_from_image(img)
+	return tex
+
+
+func _make_splash_particles() -> GPUParticles3D:
+	var half := Terrain.WORLD_SIZE * 0.5
+	var mesh := QuadMesh.new()
+	mesh.size = Vector2(0.35, 0.35)
+	mesh.orientation = QuadMesh.FACE_Y
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.vertex_color_use_as_albedo = true
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.billboard_mode = BaseMaterial3D.BILLBOARD_ENABLED
+	mat.albedo_color = Color(1, 1, 1, 0.9)
+	mesh.material = mat
+	var pm := ParticleProcessMaterial.new()
+	pm.emission_shape = ParticleProcessMaterial.EMISSION_SHAPE_BOX
+	pm.emission_box_extents = Vector3(half, 1.2, half)
+	pm.direction = Vector3(0.0, 1.0, 0.0)
+	pm.spread = 2.0
+	pm.gravity = Vector3(0.0, -4.0, 0.0)
+	pm.initial_velocity_min = 0.2
+	pm.initial_velocity_max = 0.6
+	pm.scale_min = 0.5
+	pm.scale_max = 1.1
+	# Expandir anillo al envejecer (salpicadura)
+	pm.scale_curve = _make_scale_curve()
+	pm.color = Color(0.85, 0.92, 1.0, 0.85)
+	pm.color_ramp = _make_splash_ramp()
+	pm.lifetime_randomness = 0.4
+	var p := GPUParticles3D.new()
+	p.draw_pass_1 = mesh
+	p.process_material = pm
+	p.amount = 4000
+	p.lifetime = 0.55
+	p.emitting = false
+	p.visible = false
+	p.position = Vector3(half, 0.25, half)
+	p.visibility_aabb = AABB(Vector3(-half, -2.0, -half), Vector3(half * 3.0, 6.0, half * 3.0))
+	return p
+
+
+func _make_scale_curve() -> CurveTexture:
+	var c := Curve.new()
+	c.add_point(Vector2(0.0, 0.35))
+	c.add_point(Vector2(0.25, 1.0))
+	c.add_point(Vector2(1.0, 1.45))
+	var ct := CurveTexture.new()
+	ct.curve = c
+	return ct
+
+
+func _make_splash_ramp() -> GradientTexture1D:
+	var g := Gradient.new()
+	g.add_point(0.0, Color(1, 1, 1, 0.0))
+	g.add_point(0.15, Color(1, 1, 1, 0.85))
+	g.add_point(0.65, Color(1, 1, 1, 0.45))
+	g.add_point(1.0, Color(1, 1, 1, 0.0))
+	var gt := GradientTexture1D.new()
+	gt.gradient = g
+	return gt
+
+
+func _update_splashes(rain: float) -> void:
+	if _rain_splash == null:
+		return
+	# Salpicadura sutil solo si llueve: anillos tenues, no patron
+	if rain > 0.01:
+		_rain_splash.amount_ratio = clampf(rain * 0.7, 0.0, 1.0)
+		_rain_splash.emitting = true
+		_rain_splash.visible = true
+	else:
+		_rain_splash.emitting = false
+		_rain_splash.visible = false
+
+
 func _process(delta: float) -> void:
-	var prev := _time
-	_time = fmod(_time + delta / cycle_duration, 1.0)
-	if _time < prev:
-		_day += 1
+	if not dev_paused:
+		var prev := _time
+		_time = fmod(_time + delta / cycle_duration, 1.0)
+		if _time < prev:
+			_day += 1
 	_apply_lighting()
 	_apply_weather()
+	_update_ground_weather(delta)
+	_update_rain_height()
 
 
 # --- Consulta de fecha (para la interfaz y futuras mecanicas) ---
@@ -308,6 +437,14 @@ func get_season_progress() -> float:
 
 
 func get_weather_name() -> String:
+	if _dev_weather_override != "":
+		match _dev_weather_override:
+			"nieve":
+				return "Nieve"
+			"lluvia":
+				return "Lluvia"
+			_:
+				return "Despejado"
 	var k: float = get_season_progress()
 	if _sfloat(SNOW_BY_SEASON, k) > 0.1:
 		return "Nieve"
@@ -395,6 +532,9 @@ func _apply_lighting() -> void:
 		_terrain_mat.set_shader_parameter("u_forest", _v(_scolor(FOREST_BY_SEASON, k)))
 		_terrain_mat.set_shader_parameter("u_snow", _v(_scolor(SNOW_COLOR_BY_SEASON, k)))
 		_terrain_mat.set_shader_parameter("u_snow_level", _sfloat(SNOW_LEVEL_BY_SEASON, k))
+		_terrain_mat.set_shader_parameter("u_snow_cover", _snow_cover)
+		_terrain_mat.set_shader_parameter("u_wet", _wet_amount)
+		_terrain_mat.set_shader_parameter("u_rain_ripple", _rain_ripple)
 
 	# Niebla de la estacion
 	_env.fog_density = _sfloat(FOG_DENSITY_BY_SEASON, k)
@@ -404,22 +544,65 @@ func _apply_lighting() -> void:
 		_veg.apply_season(get_season(), k)
 
 
+func dev_set_hour(h: float) -> void:
+	_time = clampf(h / 24.0, 0.0, 0.9999)
+	_apply_lighting()
+	_apply_weather()
+
+
+func dev_set_season(s: int) -> void:
+	s = clampi(s, 0, SEASONS.size() - 1)
+	# Mantiene el progreso dentro de la estacion en 0 para un cambio limpio
+	_day = s * days_per_season
+	_apply_lighting()
+	_apply_weather()
+
+
+func dev_set_weather_override(w: String) -> void:
+	# ""=auto, "despejado", "lluvia", "nieve"
+	_dev_weather_override = w
+	_apply_weather()
+
+
+func dev_set_paused(p: bool) -> void:
+	dev_paused = p
+
+
 func _apply_weather() -> void:
 	if _rain == null or _snow == null:
 		return
-	var k: float = get_season_progress()
-	var rain := _sfloat(RAIN_BY_SEASON, k)
-	var snow := _sfloat(SNOW_BY_SEASON, k)
+	var rain: float
+	var snow: float
+	if _dev_weather_override != "":
+		match _dev_weather_override:
+			"lluvia":
+				rain = 1.0
+				snow = 0.0
+			"nieve":
+				rain = 0.0
+				snow = 1.0
+			_:
+				rain = 0.0
+				snow = 0.0
+	else:
+		var k: float = get_season_progress()
+		rain = _sfloat(RAIN_BY_SEASON, k)
+		snow = _sfloat(SNOW_BY_SEASON, k)
 	if rain > 0.001:
 		var pm := _rain.process_material as ParticleProcessMaterial
-		pm.gravity = Vector3(0.0, -60.0, 0.0)
-		pm.initial_velocity_min = 4.0
-		pm.initial_velocity_max = 7.0
-		pm.scale_min = 0.04
-		pm.scale_max = 0.08
-		pm.color = Color(0.7, 0.82, 0.95, 0.75)
-		_rain.lifetime = 1.6
-		_rain.amount = int(RAIN_PARTICLES * rain)
+		pm.gravity = Vector3(0.0, -55.0, 0.0)
+		pm.initial_velocity_min = 20.0
+		pm.initial_velocity_max = 28.0
+		pm.scale_min = 1.0
+		pm.scale_max = 1.45
+		pm.color = Color(0.78, 0.88, 1.0, 0.72)
+		# Inclinacion coherente con la direccion (rasante visible)
+		pm.direction = Vector3(0.18, -1.0, 0.08)
+		pm.spread = 7.0
+		pm.damping_min = 0.0
+		pm.damping_max = 0.0
+		_rain.lifetime = 2.2
+		_rain.amount = int(RAIN_PARTICLES * clampf(rain, 0.0, 1.0))
 		_rain.emitting = true
 		_rain.visible = true
 	else:
@@ -427,19 +610,87 @@ func _apply_weather() -> void:
 		_rain.visible = false
 	if snow > 0.001:
 		var pm := _snow.process_material as ParticleProcessMaterial
-		pm.gravity = Vector3(0.0, -3.5, 0.0)
-		pm.initial_velocity_min = 0.4
-		pm.initial_velocity_max = 1.2
-		pm.scale_min = 0.18
-		pm.scale_max = 0.34
-		pm.color = Color(0.95, 0.98, 1.0, 0.9)
-		_snow.lifetime = 10.0
-		_snow.amount = int(SNOW_PARTICLES * snow)
+		pm.gravity = Vector3(0.0, -2.2, 0.0)
+		pm.initial_velocity_min = 1.5
+		pm.initial_velocity_max = 3.5
+		pm.scale_min = 1.3
+		pm.scale_max = 1.9
+		pm.color = Color(1.0, 1.0, 1.0, 0.95)
+		pm.damping_min = 0.2
+		pm.damping_max = 0.4
+		_snow.lifetime = 12.0
+		_snow.amount = int(SNOW_PARTICLES * clampf(snow, 0.0, 1.0))
 		_snow.emitting = true
 		_snow.visible = true
 	else:
 		_snow.emitting = false
 		_snow.visible = false
+	# Splashes de lluvia visibles al impactar (se actualizan aqui mismo)
+	_update_splashes(rain)
+
+
+func _update_ground_weather(delta: float) -> void:
+	# Capa fina de nieve: se acumula mientras nieva, se derrite despacio si no
+	var snow_intensity := 0.0
+	var rain_intensity := 0.0
+	if _dev_weather_override != "":
+		match _dev_weather_override:
+			"nieve": snow_intensity = 1.0
+			"lluvia": rain_intensity = 1.0
+	else:
+		var k := get_season_progress()
+		snow_intensity = _sfloat(SNOW_BY_SEASON, k)
+		rain_intensity = _sfloat(RAIN_BY_SEASON, k)
+	# Nieve: acumula hasta 0.55, derrite mas rapido con lluvia o calor (verano)
+	if snow_intensity > 0.05:
+		_snow_cover = clampf(_snow_cover + delta * 0.06 * snow_intensity, 0.0, 0.55)
+	elif _snow_cover > 0.0:
+		var melt := delta * (0.02 + rain_intensity * 0.08)
+		# En invierno derrite mas lento
+		if get_season() == 3:
+			melt *= 0.35
+		_snow_cover = maxf(0.0, _snow_cover - melt)
+	# Mojado: sube rapido con lluvia, seca despacio
+	var target_wet := clampf(rain_intensity, 0.0, 1.0)
+	if target_wet > _wet_amount:
+		_wet_amount = minf(target_wet, _wet_amount + delta * 0.8)
+	else:
+		_wet_amount = maxf(target_wet, _wet_amount - delta * 0.05)
+	# Ripple sobre el agua solo con lluvia
+	var target_ripple := clampf(rain_intensity, 0.0, 1.0)
+	if target_ripple > _rain_ripple:
+		_rain_ripple = minf(target_ripple, _rain_ripple + delta * 2.0)
+	else:
+		_rain_ripple = maxf(target_ripple, _rain_ripple - delta * 1.0)
+	if _terrain_mat != null:
+		_terrain_mat.set_shader_parameter("u_snow_cover", _snow_cover)
+		_terrain_mat.set_shader_parameter("u_wet", _wet_amount)
+		_terrain_mat.set_shader_parameter("u_rain_ripple", _rain_ripple)
+	# Niebla extra con lluvia/nieve para cortina lejana
+	if _env != null:
+		var base_fog := _sfloat(FOG_DENSITY_BY_SEASON, get_season_progress())
+		var extra := rain_intensity * 0.0022 + snow_intensity * 0.0012
+		_env.fog_density = base_fog + extra
+
+
+func _update_rain_height() -> void:
+	# Mantiene la cortina centrada en altura de la camara para que pegado al
+	# suelo se siga viendo (si no, la caja fija 0-64 deja el ojo por debajo)
+	if _cam_rig == null or (_rain == null and _snow == null):
+		return
+	var h := Terrain.height_at(Vector2(_cam_rig.global_position.x, _cam_rig.global_position.z))
+	var y := h + 28.0
+	var half := Terrain.WORLD_SIZE * 0.5
+	# Solo mueve Y, XZ queda centrado en el mapa para cubrir todo el mundo
+	var pos_rain := Vector3(half, y, half)
+	var pos_snow := Vector3(half, y + 8.0, half)
+	if _rain != null:
+		_rain.global_position = pos_rain
+	if _snow != null:
+		_snow.global_position = pos_snow
+	if _rain_splash != null:
+		var hs := Terrain.height_at(Vector2(_cam_rig.global_position.x, _cam_rig.global_position.z))
+		_rain_splash.global_position = Vector3(half, hs + 0.25, half)
 
 
 func _v(c: Color) -> Vector3:

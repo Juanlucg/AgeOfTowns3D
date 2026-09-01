@@ -9,6 +9,7 @@
 [ext_resource type="Script" uid="uid://c0ubxnwo725t5" path="res://scripts/Buildings.gd" id="7_build"]
 [ext_resource type="Script" uid="uid://dqmn4la1ff0rh" path="res://scripts/HUD.gd" id="8_hud"]
 [ext_resource type="Script" uid="uid://bwrau7rfak1y3" path="res://scripts/BuildMenu.gd" id="10_menu"]
+[ext_resource type="Script" path="res://scripts/DevTools.gd" id="11_dev"]
 
 [node name="Main" type="Node3D" unique_id=1696096527]
 
@@ -54,3 +55,6 @@ script = ExtResource("8_hud")
 
 [node name="BuildMenu" type="CanvasLayer" parent="." unique_id=829077859]
 script = ExtResource("10_menu")
+
+[node name="DevTools" type="CanvasLayer" parent="." unique_id=987654321]
+script = ExtResource("11_dev")

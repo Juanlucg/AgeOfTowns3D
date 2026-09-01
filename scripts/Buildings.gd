@@ -99,6 +99,9 @@ var _field_ghost: Node3D = null
 var _field_farm: Dictionary = {}
 var _field_yaw := 0.0
 
+# --- Herramientas dev ---
+var dev_free_build := false  # si true: sin coste y sin produccion (solo prueba de implantacion)
+
 
 func _ready() -> void:
 	_cam_rig = get_node("/root/Main/CameraRig")
@@ -169,6 +172,8 @@ func _update_ghost_material(color: Color) -> void:
 
 func _tick_production(delta: float) -> void:
 	for b in _placed:
+		if b.get("dev", false):
+			continue
 		var d: Dictionary = TYPES[b.type]
 		if d["prod"] == "":
 			continue
@@ -223,16 +228,19 @@ func _place() -> void:
 	if not _is_valid(ground, _pending):
 		var reason := ""
 		var cls := Terrain.terrain_type(ground)
-		if not (d["terrains"] as Array).has(cls):
+		var is_terrain_block := not (d["terrains"] as Array).has(cls)
+		# En modo dev se ignora solo el coste, no el terreno ni la proximidad
+		if is_terrain_block:
 			reason = "Solo se puede construir en %s" % _terrains_text(d["terrains"])
-		elif not Economy.can_afford(d["cost"]):
+		elif not dev_free_build and not Economy.can_afford(d["cost"]):
 			reason = "Recursos insuficientes (%s)" % _cost_text(d["cost"])
 		else:
 			reason = "Demasiado cerca de otro edificio"
 		if hud != null:
 			hud.show_message(reason)
 		return
-	Economy.spend_all(d["cost"])
+	if not dev_free_build:
+		Economy.spend_all(d["cost"])
 	if _pending == "granero":
 		Economy.granary_count += 1
 		Economy.changed.emit()
@@ -242,7 +250,7 @@ func _place() -> void:
 	node.position = Vector3(ground.x, base_h, ground.y)
 	node.add_child(_make_foundation(ground, d["footprint"], base_h, null))
 	add_child(node)
-	var rec := {"type": _pending, "pos": ground, "yaw": _yaw, "node": node, "timer": 0.0}
+	var rec := {"type": _pending, "pos": ground, "yaw": _yaw, "node": node, "timer": 0.0, "dev": dev_free_build}
 	_placed.append(rec)
 	building_built.emit(_pending, ground)
 	var veg := get_node_or_null("/root/Main/Vegetation")
@@ -595,7 +603,7 @@ func _is_valid(pos: Vector2, type: String) -> bool:
 	var d: Dictionary = TYPES[type]
 	if not (d["terrains"] as Array).has(Terrain.terrain_type(pos)):
 		return false
-	if not Economy.can_afford(d["cost"]):
+	if not dev_free_build and not Economy.can_afford(d["cost"]):
 		return false
 	var min_dist: float = d["footprint"] + 1.5
 	for b in _placed:

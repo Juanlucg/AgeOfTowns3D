@@ -111,8 +111,15 @@ func _apply_material() -> void:
 		uniform vec3 u_forest = vec3(0.20, 0.38, 0.16);
 		uniform vec3 u_snow = vec3(0.94, 0.95, 0.97);
 		uniform float u_snow_level = 7.0;
+		uniform float u_snow_cover = 0.0;
+		uniform float u_wet = 0.0;
+		uniform float u_rain_ripple = 0.0;
 
 		varying vec4 custom0;
+
+		float hash(vec2 p) {
+			return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+		}
 
 		void vertex() {
 			custom0 = CUSTOM0;
@@ -135,6 +142,21 @@ func _apply_material() -> void:
 			float t_forest = plains_lo * plains_hi * smoothstep(0.06, 0.10, forest);
 			land = mix(land, u_forest, t_forest);
 
+			// Nieve acumulada fina por nevada (no altura, solo clima): capa translucida
+			// sobre llanura/bosque, nunca sobre agua ni playa y menos en roca alta
+			if (u_snow_cover > 0.001) {
+				float snow_mask = (1.0 - step(h, 0.3)) * plains_lo * plains_hi;
+				// Atenua en bosque denso y en roca para variedad
+				snow_mask *= (1.0 - t_forest * 0.5) * (1.0 - t_rock * 0.7);
+				float snow_a = u_snow_cover * snow_mask * 0.85;
+				land = mix(land, u_snow, clamp(snow_a, 0.0, 0.55));
+			}
+			// Suelo mojado por lluvia: oscurece y baja rugosidad
+			if (u_wet > 0.001) {
+				float wet_mask = (1.0 - smoothstep(u_snow_level, u_snow_level + 0.15, h)) * (1.0 - t_rock * 0.6);
+				land = mix(land, land * 0.78, clamp(u_wet * wet_mask * 0.65, 0.0, 0.35));
+			}
+
 			// Agua de un solo color plano: sin gradiente, sin espuma. El borde
 			// es una transicion ANCHA (suave, como orilla mojada) para que la
 			// linea de costa no se vea pixelada en lagos y rios pequenos.
@@ -143,13 +165,44 @@ func _apply_material() -> void:
 
 			ALBEDO = col;
 			if (water_t > 0.5) {
-				// Brillo del sol sobre olas amplias y lentas (solo iluminacion)
 				float n1 = sin(UV.x * 40.0 + TIME * 0.6) + sin(UV.y * 30.0 - TIME * 0.4);
 				float n2 = cos(UV.x * 28.0 - TIME * 0.5) + cos(UV.y * 36.0 + TIME * 0.7);
-				NORMAL = normalize(vec3(n1 * 0.15, 1.0, n2 * 0.15));
-				ROUGHNESS = 0.15;
+				vec3 n = vec3(n1 * 0.15, 1.0, n2 * 0.15);
+				// Lluvia sobre el agua: anillos concentricos como en la foto de referencia
+				float rain_rings = 0.0;
+				float rain_norm = 0.0;
+				if (u_rain_ripple > 0.001) {
+					vec2 uvp = UV * 75.0;
+					vec2 ip = floor(uvp);
+					vec2 fp = fract(uvp);
+					float t = TIME * 0.55;
+					for (int y = -1; y <= 1; y++) {
+						for (int x = -1; x <= 1; x++) {
+							vec2 cell = ip + vec2(float(x), float(y));
+							float h1 = hash(cell);
+							float h2 = hash(cell + vec2(19.3, 7.1));
+							vec2 center = vec2(h1, h2);
+							float dist = length(fp - center + vec2(float(x), float(y)));
+							float phase = fract(t * (0.5 + h1 * 0.5) + h2 * 6.283);
+							float radius = phase * 0.45;
+							float w = 0.018 + h1 * 0.012;
+							float ring = 1.0 - smoothstep(w, w + 0.022, abs(dist - radius));
+							ring *= smoothstep(0.0, 0.08, phase) * (1.0 - smoothstep(0.35, 0.5, phase));
+							rain_rings += ring * 0.55;
+							// Normales sutiles de los anillos
+							rain_norm += ring * sign(dist - radius) * 0.5;
+						}
+					}
+					rain_rings = clamp(rain_rings, 0.0, 1.0);
+					n.x += rain_norm * 0.06 * u_rain_ripple;
+					n.z += rain_norm * 0.06 * u_rain_ripple;
+					// Oscurece ligeramente el centro del anillo como en la foto
+					col = mix(col, col * 0.88, clamp(rain_rings * u_rain_ripple * 0.45, 0.0, 0.3));
+				}
+				NORMAL = normalize(n);
+				ROUGHNESS = mix(0.15, 0.28, clamp(u_rain_ripple * 0.6 + rain_rings * 0.25, 0.0, 1.0));
 			} else {
-				ROUGHNESS = 1.0;
+				ROUGHNESS = mix(1.0, 0.45, clamp(u_wet * 0.7, 0.0, 1.0));
 			}
 		}
 	"""

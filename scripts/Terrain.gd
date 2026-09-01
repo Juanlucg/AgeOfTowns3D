@@ -77,7 +77,7 @@ const RIVER_MOUTH_BED := -0.12    # profundidad del cauce justo en la desembocad
 const RIVER_MAX_STEPS := 3000
 
 # Lago de montaña: un solo lago, medio, irregular y elevado entre las sierras
-const MOUNTAIN_LAKE_WL := 2.5       # nivel del agua del lago (por encima del mar)
+const MOUNTAIN_LAKE_WL := 1.9       # nivel del agua del lago (por encima del mar) — mas bajo para no flotar
 const MOUNTAIN_LAKE_MIN_SEA := 25.0   # u.m. minimas del lago al mar
 const MOUNTAIN_LAKE_H_MIN := 3.0      # altura del sitio (entre las sierras)
 const MOUNTAIN_LAKE_H_MAX := 6.5
@@ -387,34 +387,47 @@ func _generate() -> void:
 			continue
 		var center := Vector2(px, py)
 		var radius_u := lake_rng.randf_range(8.0, 11.0)
-		var core_frac := 0.5
+		var core_frac := 0.82
 		var bottom := MOUNTAIN_LAKE_WL - 1.2
 		var box := int(radius_u * 1.5 * _px_per_unit) + 2
 		var x0 := maxi(0, px - box)
 		var x1 := mini(_width - 1, px + box)
 		var y0 := maxi(0, py - box)
 		var y1 := mini(_height - 1, py + box)
+		# Núcleo plano circular (sin ruido) para evitar islas: 75% del radio siempre es fondo
+		var flat_r := radius_u * 0.75
 		for j in range(y0, y1 + 1):
 			for i in range(x0, x1 + 1):
 				var d_u: float = Vector2(i, j).distance_to(center) / _px_per_unit
-				# Radio local irregular (ruido en coords de mundo y estirado
-				# para que la orilla sea lobulada, no un circulo)
 				var nv := lake_shape.get_noise_2d(float(i) / _px_per_unit * 1.3, float(j) / _px_per_unit * 0.8)
 				var rr := radius_u * (1.0 + 0.5 * nv)
-				if d_u > rr:
+				if d_u > rr and d_u > flat_r:
 					continue
 				var orig: float = heights[j * _width + i]
 				var target: float
-				if d_u <= rr * core_frac:
-					# Fondo plano del lago (por debajo de su nivel de agua)
+				if d_u <= flat_r:
 					target = bottom
-				else:
-					var u := (d_u - rr * core_frac) / (rr - rr * core_frac)
+				elif d_u <= rr:
+					var u := (d_u - flat_r) / (rr - flat_r)
 					var t := _smoothstep(clampf(u, 0.0, 1.0))
 					target = lerpf(bottom, orig, t)
+				else:
+					target = bottom
 				heights[j * _width + i] = target
 				_wl_px[j * _width + i] = MOUNTAIN_LAKE_WL
 				_lake_px[j * _width + i] = 1
+		# Borde del lago: eleva el anillo exterior para que el agua no flote sobre laderas bajas
+		for j in range(y0, y1 + 1):
+			for i in range(x0, x1 + 1):
+				var d_u: float = Vector2(i, j).distance_to(center) / _px_per_unit
+				var nv := lake_shape.get_noise_2d(float(i) / _px_per_unit * 1.3, float(j) / _px_per_unit * 0.8)
+				var rr := radius_u * (1.0 + 0.5 * nv)
+				if d_u <= maxf(rr, flat_r) or d_u > maxf(rr, flat_r) + 3.0:
+					continue
+				var idx := j * _width + i
+				var wall_h := MOUNTAIN_LAKE_WL + 0.45
+				if heights[idx] < wall_h:
+					heights[idx] = lerpf(wall_h, heights[idx], clampf((d_u - maxf(rr, flat_r)) / 3.0, 0.0, 1.0))
 
 		# --- Abertura hacia el bosque: se quita la sierra del lado que da al
 		# terreno mas bajo (bosque/llanura) con un cono ancho, para que el lago
