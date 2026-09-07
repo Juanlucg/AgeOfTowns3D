@@ -36,7 +36,6 @@ func _ready() -> void:
 	_day = get_node_or_null(day_night_path) as DayNightCycle
 	assert(_day != null, "HUD: day_night_path no asignado en el .tscn")
 	_day.time_changed.connect(_on_time_changed)
-	_update()  # pinta una vez con los valores actuales
 	layer = 10
 
 	var panel := PanelContainer.new()

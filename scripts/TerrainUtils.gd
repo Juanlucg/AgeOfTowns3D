@@ -175,7 +175,7 @@ static func upsample_field(low: PackedFloat32Array, lw: int, lh: int, out_w: int
 			var fx := (float(i) + 0.5) / float(out_w) * float(lw) - 0.5
 			var x0 := clampi(int(floor(fx)), 0, lw - 1)
 			var x1 := mini(x0 + 1, lw - 1)
-			var tx := fx - floor(fx)
+			var tx: float = fx - floor(fx)
 			var v00 := low[y0 * lw + x0]
 			var v10 := low[y0 * lw + x1]
 			var v01 := low[y1 * lw + x0]

@@ -274,7 +274,7 @@ func _place() -> void:
 	var d := get_def(_pending)
 	if not _is_valid(ground, _pending):
 		var reason := ""
-		var cls := Terrain.terrain_type(ground)
+		var cls: String = Terrain.terrain_type(ground)
 		var biome_ok := _biome_matches(cls, d.biomes)
 		if not biome_ok:
 			reason = "Solo se puede construir en %s" % d.biomes_text(_BIOME_NAMES)
@@ -479,8 +479,8 @@ func _make_foundation(pos: Vector2, footprint: float, base_h: float, mat: Materi
 	while y <= half:
 		var x := -half
 		while x <= half:
-			var h := Terrain.height_at(pos + Vector2(x, y))
-			var dh := base_h - h - 0.15
+			var h: float = Terrain.height_at(pos + Vector2(x, y))
+			var dh: float = base_h - h - 0.15
 			if dh > 0.08:
 				var col := MeshInstance3D.new()
 				var cm := BoxMesh.new()

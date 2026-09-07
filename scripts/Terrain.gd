@@ -182,7 +182,7 @@ func _generate() -> void:
 			cont_low[j * ml + i] = base_noise.get_noise_2d(nx, ny) * CONTINENT_GAIN - falloff * EDGE_FALLOFF + CONTINENT_SHORE
 
 	# Suaviza la mascara a baja resolucion (equivale al blur a res. completa)
-	cont_low = TerrainUtils.blur_y(y), ml, ml, 1)
+	cont_low = TerrainUtils.blur_y(TerrainUtils.blur_x(cont_low, ml, ml, 1), ml, ml, 1)
 	var sea_mask_low := PackedByteArray()
 	sea_mask_low.resize(ml * ml)
 	var land_mask_low := PackedByteArray()
@@ -479,10 +479,10 @@ func _generate() -> void:
 
 	# --- Nivel de agua suavizado: se difumina _wl_px para que el borde de
 	# los lagos y el cauce del rio no tengan saltos de 1 px entre celdas ---
-	_wl_px = TerrainUtils.blur_y(y), 1)
+	_wl_px = TerrainUtils.blur_y(TerrainUtils.blur_x(_wl_px, _width, _height, 1), _width, _height, 1)
 
 	# --- Suavizado final del relieve ---
-	heights = TerrainUtils.blur_y(y), SMOOTH_RADIUS)
+	heights = TerrainUtils.blur_y(TerrainUtils.blur_x(heights, _width, _height, SMOOTH_RADIUS), _width, _height, SMOOTH_RADIUS)
 	_height_px = heights
 
 	# --- Lagos solo en el interior: se rellenan las masas de agua aisladas

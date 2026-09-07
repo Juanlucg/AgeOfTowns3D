@@ -66,7 +66,7 @@ func _populate() -> void:
 			if Terrain.distance_to_water(pos) < 0.5:
 				y += STEP
 				continue
-			var cls := Terrain.terrain_type(pos)
+			var cls: String = Terrain.terrain_type(pos)
 			var prob := 0.0
 			match cls:
 				"bosque":
@@ -83,7 +83,7 @@ func _populate() -> void:
 				var variant := rng.randi_range(0, 2)
 				var yaw := rng.randf_range(0.0, TAU)
 				var basis := Basis(Vector3.UP, yaw).scaled(Vector3(s, s, s))
-				var h := Terrain.height_at(pos)
+				var h: float = Terrain.height_at(pos)
 				var t := Transform3D(basis, Vector3(pos.x, h + sy[variant] * s * 1.0, pos.y))
 				match variant:
 					0:

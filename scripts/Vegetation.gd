@@ -90,7 +90,7 @@ func _populate() -> void:
 		var y := 0.0
 		while y < Terrain.WORLD_SIZE:
 			var p := Vector2(x, y)
-			var cls := Terrain.terrain_type(p)
+			var cls: String = Terrain.terrain_type(p)
 			var tree_prob := 0.0
 			var bush_prob := 0.0
 			var round_only := false
@@ -142,14 +142,14 @@ func _assign_transforms(mmi: MultiMeshInstance3D, transforms: Array[Transform3D]
 # separacion minima de la costa para que troncos y arbustos no queden en el
 # agua, la arena ni la montaña (el jitter puede sacarlos de su celda original).
 func _plantable_at(pos: Vector2) -> bool:
-	var cls := Terrain.terrain_type(pos)
+	var cls: String = Terrain.terrain_type(pos)
 	if cls != "bosque" and cls != "llanura":
 		return false
 	return Terrain.distance_to_water(pos) >= 0.6
 
 
 func _make_transform(pos: Vector2, rng: RandomNumberGenerator, s_min: float, s_max: float) -> Transform3D:
-	var h := Terrain.height_at(pos)
+	var h: float = Terrain.height_at(pos)
 	var s := rng.randf_range(s_min, s_max)
 	var yaw := rng.randf_range(0.0, TAU)
 	var basis := Basis(Vector3.UP, yaw).scaled(Vector3(s, s, s))

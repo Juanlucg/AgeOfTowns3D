@@ -268,7 +268,7 @@ func _setup_weather() -> void:
 
 
 func _make_particles(mesh: QuadMesh, pm: ParticleProcessMaterial, sx: float, sy: float, amount: int) -> GPUParticles3D:
-	var half := Terrain.WORLD_SIZE * 0.5
+	var half: float = Terrain.WORLD_SIZE * 0.5
 	var p := GPUParticles3D.new()
 	mesh.size = Vector2(sx, sy)
 	mesh.orientation = QuadMesh.FACE_Y
@@ -331,7 +331,7 @@ func _make_soft_dot_texture() -> ImageTexture:
 
 
 func _make_splash_particles() -> GPUParticles3D:
-	var half := Terrain.WORLD_SIZE * 0.5
+	var half: float = Terrain.WORLD_SIZE * 0.5
 	var mesh := QuadMesh.new()
 	mesh.size = Vector2(0.35, 0.35)
 	mesh.orientation = QuadMesh.FACE_Y
@@ -692,9 +692,9 @@ func _update_rain_height() -> void:
 	# suelo se siga viendo (si no, la caja fija 0-64 deja el ojo por debajo)
 	if _cam_rig == null or (_rain == null and _snow == null):
 		return
-	var h := Terrain.height_at(Vector2(_cam_rig.global_position.x, _cam_rig.global_position.z))
-	var y := h + 28.0
-	var half := Terrain.WORLD_SIZE * 0.5
+	var h: float = Terrain.height_at(Vector2(_cam_rig.global_position.x, _cam_rig.global_position.z))
+	var y: float = h + 28.0
+	var half: float = Terrain.WORLD_SIZE * 0.5
 	# Solo mueve Y, XZ queda centrado en el mapa para cubrir todo el mundo
 	var pos_rain := Vector3(half, y, half)
 	var pos_snow := Vector3(half, y + 8.0, half)
@@ -703,7 +703,7 @@ func _update_rain_height() -> void:
 	if _snow != null:
 		_snow.global_position = pos_snow
 	if _rain_splash != null:
-		var hs := Terrain.height_at(Vector2(_cam_rig.global_position.x, _cam_rig.global_position.z))
+		var hs: float = Terrain.height_at(Vector2(_cam_rig.global_position.x, _cam_rig.global_position.z))
 		_rain_splash.global_position = Vector3(half, hs + 0.25, half)
 
 
