@@ -157,9 +157,11 @@ func _ready() -> void:
 	# time_changed que usa HUD (10 Hz en vez de 60 Hz).
 
 
-func _on_time_changed(_day: int, _season: int, hour: float, _weather: String) -> void:
+func _on_time_changed(day_value: int, _season: int, hour: float, _weather: String) -> void:
 	if _updating:
 		return
+	# _day es la referencia al DayNightCycle de instancia; los parametros
+	# del callback usan nombres distintos para no sombrearlo.
 	if not _hour_slider.has_focus() and not _day.dev_paused:
 		_updating = true
 		_hour_slider.value = hour
