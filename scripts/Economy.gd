@@ -2,6 +2,13 @@ extends Node
 # Economia y almacenamiento del pueblo: cantidades de recursos, capacidad de
 # almacenaje (base + graneros) y definiciones de costes de construccion.
 # Emite "changed" cada vez que cambia algo para que el HUD se refresque.
+#
+# Antes buscaba DayNightCycle cada frame por ruta absoluta. Ahora recibe la
+# dependencia via bind() desde Main.gd y reacciona a la senal `day_changed`.
+#
+# Nota: este script se monta como autoload con el nombre "Economy" en
+# project.godot. No se anade `class_name Economy` porque colisionaria con el
+# singleton del autoload (el autoload ya provee `Economy` como global).
 
 signal changed
 
@@ -17,8 +24,16 @@ const DAILY_FOOD := 3.0
 
 var amounts := {"madera": 40.0, "piedra": 25.0, "comida": 20.0}
 var granary_count := 0
-var _last_day := -1
-var _day_node: Node = null
+
+var _day_night: DayNightCycle = null
+
+
+func bind_day_night(dn: DayNightCycle) -> void:
+	if _day_night != null:
+		_day_night.day_changed.disconnect(_on_day_changed)
+	_day_night = dn
+	if _day_night != null:
+		_day_night.day_changed.connect(_on_day_changed)
 
 
 func storage_capacity() -> float:
@@ -69,13 +84,6 @@ func spend_all(cost: Dictionary) -> bool:
 	return true
 
 
-func _process(_delta: float) -> void:
-	if _day_node == null:
-		_day_node = get_node_or_null("/root/Main/DayNightCycle")
-		if _day_node == null:
-			return
-	var day: int = _day_node.get_day()
-	if day != _last_day:
-		_last_day = day
-		if day > 0:
-			add("comida", DAILY_FOOD)
+func _on_day_changed(day: int) -> void:
+	if day > 0:
+		add("comida", DAILY_FOOD)

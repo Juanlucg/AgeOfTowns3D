@@ -1,4 +1,5 @@
 extends Node3D
+class_name Rocks
 # Rocas: cantos de bajo poligono instanciados con MultiMesh. Forma de boulder
 # (icosaedro subdividido, con los vertices desplazados radialmente y aplastado
 # en Y): anchas y bajas, medio hundidas en el suelo. Frecuentes en montaña y

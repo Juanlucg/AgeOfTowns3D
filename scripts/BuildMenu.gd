@@ -1,19 +1,23 @@
 extends CanvasLayer
+class_name BuildMenu
 # Menu de construccion en la parte inferior de la pantalla: un boton por tipo
 # de edificio (nombre, produccion y coste). Se elige con clic o con las teclas
 # 1-4; la colocacion (fantasma, rotacion y validacion) la gestiona Buildings.
+
+@export var buildings_path: NodePath
 
 const TYPE_KEYS := ["granero", "granja", "aserradero", "cantera"]
 
 var _buttons := {}
 var _group := ButtonGroup.new()
-var _buildings: Node
+var _buildings: Buildings
 var _hint: Label
 var _syncing := false
 
 
 func _ready() -> void:
-	_buildings = get_node("/root/Main/Buildings")
+	_buildings = get_node_or_null(buildings_path) as Buildings
+	assert(_buildings != null, "BuildMenu: buildings_path no asignado en el .tscn")
 	layer = 10
 	_buildings.selection_changed.connect(_on_selection_changed)
 

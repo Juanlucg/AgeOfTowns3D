@@ -1,4 +1,5 @@
 extends Node3D
+class_name Buildings
 # Construcciones del pueblo. Se eligen desde el menu inferior (o teclas 1-4):
 # granero (almacen), granja (casita + campo de cultivo elegido), aserradero
 # (cabaña abierta con mesa de corte) y cantera (piedra).
@@ -12,6 +13,10 @@ extends Node3D
 
 signal building_built(type: String, pos: Vector2)
 signal selection_changed(type: String)
+signal message_requested(text: String)
+signal place_clear_requested(pos: Vector2, radius: float)
+
+@export var camera_path: NodePath
 
 const TYPES := {
 	"granero": {
@@ -91,7 +96,7 @@ var _ghost: Node3D = null
 var _ghost_building: Node3D = null
 var _ghost_foundation: Node3D = null
 var _placed: Array = []
-var _cam_rig: Node3D
+var _cam_rig: CameraController3D
 var _field_mode := false
 var _field_start := Vector2.ZERO
 var _field_crop := "trigo"
@@ -104,7 +109,8 @@ var dev_free_build := false  # si true: sin coste y sin produccion (solo prueba 
 
 
 func _ready() -> void:
-	_cam_rig = get_node("/root/Main/CameraRig")
+	_cam_rig = get_node_or_null(camera_path) as CameraController3D
+	assert(_cam_rig != null, "Buildings: camera_path no asignado en el .tscn")
 
 
 func is_placing() -> bool:
@@ -222,7 +228,6 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _place() -> void:
-	var hud := get_node_or_null("/root/Main/HUD")
 	var ground: Vector2 = _cam_rig.screen_to_ground(get_viewport().get_mouse_position())
 	var d: Dictionary = TYPES[_pending]
 	if not _is_valid(ground, _pending):
@@ -236,8 +241,7 @@ func _place() -> void:
 			reason = "Recursos insuficientes (%s)" % _cost_text(d["cost"])
 		else:
 			reason = "Demasiado cerca de otro edificio"
-		if hud != null:
-			hud.show_message(reason)
+		message_requested.emit(reason)
 		return
 	if not dev_free_build:
 		Economy.spend_all(d["cost"])
@@ -253,14 +257,8 @@ func _place() -> void:
 	var rec := {"type": _pending, "pos": ground, "yaw": _yaw, "node": node, "timer": 0.0, "dev": dev_free_build}
 	_placed.append(rec)
 	building_built.emit(_pending, ground)
-	var veg := get_node_or_null("/root/Main/Vegetation")
-	if veg != null:
-		veg.clear_near(ground, d["footprint"] + 1.0)
-	var rocks := get_node_or_null("/root/Main/Rocks")
-	if rocks != null:
-		rocks.clear_near(ground, d["footprint"] + 1.0)
-	if hud != null:
-		hud.show_message("%s construido" % d["name"])
+	place_clear_requested.emit(ground, d["footprint"] + 1.0)
+	message_requested.emit("%s construido" % d["name"])
 	if _pending == "granja":
 		# segundo paso: delimitar el campo de cultivo
 		_field_mode = true
@@ -272,14 +270,12 @@ func _place() -> void:
 		_field_ghost = Node3D.new()
 		add_child(_field_ghost)
 		_ghost.visible = false
-		if hud != null:
-			hud.show_message("Elige la zona con el raton (clic) y el cultivo: 1 Trigo, 2 Zanahorias, 3 Bayas")
+		message_requested.emit("Elige la zona con el raton (clic) y el cultivo: 1 Trigo, 2 Zanahorias, 3 Bayas")
 		return
 	deselect()
 
 
 func _confirm_field() -> void:
-	var hud := get_node_or_null("/root/Main/HUD")
 	var ground: Vector2 = _cam_rig.screen_to_ground(get_viewport().get_mouse_position())
 	var back := Vector2(-sin(deg_to_rad(_field_yaw)), -cos(deg_to_rad(_field_yaw)))
 	var side := Vector2(back.y, -back.x)
@@ -300,39 +296,29 @@ func _confirm_field() -> void:
 	var w := rmax.x - rmin.x
 	var d := rmax.y - rmin.y
 	if w < FIELD_MIN or d < FIELD_MIN:
-		if hud != null:
-			hud.show_message("Zona demasiado pequena (min %0.0fx%0.0f m)" % [FIELD_MIN, FIELD_MIN])
+		message_requested.emit("Zona demasiado pequena (min %0.0fx%0.0f m)" % [FIELD_MIN, FIELD_MIN])
 		return
 	if w * d > FIELD_MAX_AREA:
-		if hud != null:
-			hud.show_message("Zona demasiado grande (max %0.0f m2)" % FIELD_MAX_AREA)
+		message_requested.emit("Zona demasiado grande (max %0.0f m2)" % FIELD_MAX_AREA)
 		return
 	if not _field_terrain_ok(rmin, rmax):
-		if hud != null:
-			hud.show_message("Los cultivos necesitan llanura")
+		message_requested.emit("Los cultivos necesitan llanura")
 		return
 	var field := _make_field_mesh(rmin, rmax, SOIL_COLOR, CROP_COLORS[_field_crop], false)
 	add_child(field)
 	var center := Vector2((rmin.x + rmax.x) * 0.5, (rmin.y + rmax.y) * 0.5)
 	var field_radius := maxf(w, d) + 1.5
-	var veg := get_node_or_null("/root/Main/Vegetation")
-	if veg != null:
-		veg.clear_near(center, field_radius)
-	var rocks := get_node_or_null("/root/Main/Rocks")
-	if rocks != null:
-		rocks.clear_near(center, field_radius)
+	place_clear_requested.emit(center, field_radius)
 	_field_farm["amount"] = clampf(w * d * FIELD_RATE, 1.0, 25.0)
 	_field_farm["crop"] = _field_crop
 	Economy.changed.emit()
 	var area := int(round(w * d))
 	var crop_name: String = CROP_NAMES[_field_crop]
-	if hud != null:
-		hud.show_message("Campo de %d m2 sembrado de %s" % [area, crop_name])
+	message_requested.emit("Campo de %d m2 sembrado de %s" % [area, crop_name])
 	_end_field_mode()
 
 
 func _cancel_field() -> void:
-	var hud := get_node_or_null("/root/Main/HUD")
 	_placed.erase(_field_farm)
 	if _field_farm.has("node") and _field_farm["node"] != null:
 		(_field_farm["node"] as Node).queue_free()
@@ -340,8 +326,7 @@ func _cancel_field() -> void:
 	for k in cost:
 		Economy.amounts[k] = Economy.amounts[k] + cost[k]
 	Economy.changed.emit()
-	if hud != null:
-		hud.show_message("Granja cancelada (recursos devueltos)")
+	message_requested.emit("Granja cancelada (recursos devueltos)")
 	_end_field_mode()
 
 

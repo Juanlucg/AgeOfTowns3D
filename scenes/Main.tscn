@@ -10,8 +10,10 @@
 [ext_resource type="Script" uid="uid://dqmn4la1ff0rh" path="res://scripts/HUD.gd" id="8_hud"]
 [ext_resource type="Script" uid="uid://bwrau7rfak1y3" path="res://scripts/BuildMenu.gd" id="10_menu"]
 [ext_resource type="Script" path="res://scripts/DevTools.gd" id="11_dev"]
+[ext_resource type="Script" path="res://scripts/Main.gd" id="12_main"]
 
 [node name="Main" type="Node3D" unique_id=1696096527]
+script = ExtResource("12_main")
 
 [node name="Sun" type="DirectionalLight3D" parent="." unique_id=1382638242]
 transform = Transform3D(0.7071068, -0.5, 0.5, 0, 0.7071068, 0.7071068, -0.7071068, -0.5, 0.5, 0, 12, 0)
@@ -38,6 +40,7 @@ script = ExtResource("5_rocks")
 
 [node name="Buildings" type="Node3D" parent="." unique_id=1881301566]
 script = ExtResource("7_build")
+camera_path = NodePath("../CameraRig")
 
 [node name="MinimapLayer" type="CanvasLayer" parent="." unique_id=22199242]
 
@@ -49,12 +52,18 @@ anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("6_minimap")
+camera_path = NodePath("../../CameraRig")
+buildings_path = NodePath("../../Buildings")
 
 [node name="HUD" type="CanvasLayer" parent="." unique_id=1606477643]
 script = ExtResource("8_hud")
+day_night_path = NodePath("../DayNightCycle")
 
 [node name="BuildMenu" type="CanvasLayer" parent="." unique_id=829077859]
 script = ExtResource("10_menu")
+buildings_path = NodePath("../Buildings")
 
 [node name="DevTools" type="CanvasLayer" parent="." unique_id=987654321]
 script = ExtResource("11_dev")
+day_night_path = NodePath("../DayNightCycle")
+buildings_path = NodePath("../Buildings")

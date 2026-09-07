@@ -1,12 +1,16 @@
 extends CanvasLayer
+class_name DevTools
 # Panel de herramientas de desarrollador arriba a la derecha:
 # - Hora (slider 0..24h + pausa)
 # - Estacion (selector)
 # - Tiempo/clima (Despejado/Lluvia/Nieve + Auto)
 # - Edificios dev (gratis y sin produccion, solo para probar implantacion)
 
-var _day: Node
-var _buildings: Node
+@export var day_night_path: NodePath
+@export var buildings_path: NodePath
+
+var _day: DayNightCycle
+var _buildings: Buildings
 var _hour_slider: HSlider
 var _hour_label: Label
 var _pause_btn: Button
@@ -18,8 +22,8 @@ var _updating := false
 
 func _ready() -> void:
 	layer = 11
-	_day = get_node_or_null("/root/Main/DayNightCycle")
-	_buildings = get_node_or_null("/root/Main/Buildings")
+	_day = get_node_or_null(day_night_path) as DayNightCycle
+	_buildings = get_node_or_null(buildings_path) as Buildings
 
 	var root := Control.new()
 	root.set_anchors_preset(Control.PRESET_TOP_RIGHT)

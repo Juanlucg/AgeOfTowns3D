@@ -1,4 +1,5 @@
 extends Node3D
+class_name CameraController3D
 # Camara de estrategia: vista aerea navegable sobre el mapa.
 #
 # Estructura: CameraRig (pivote, este script) -> Camera3D (hija).

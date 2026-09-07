@@ -1,10 +1,15 @@
 extends Node3D
+class_name DayNightCycle
 # Ciclo dia/noche. Rota el sol alrededor del mundo, gestiona una luna para la
 # noche y ajusta un cielo procedural con shader (WorldEnvironment) junto con
 # la luz ambiental segun la posicion del sol.
 #
 # El sol y la luna se dibujan dentro del propio shader del cielo: sin sprites,
 # se desvanecen gradualmente cerca del horizonte y no generan artefactos.
+#
+# Emite `day_changed(day)` cada vez que avanza un dia (consumidores: Economy).
+
+signal day_changed(day: int)
 
 @export var cycle_duration := 600.0   # segundos por dia completo (10 min)
 @export var start_time := 0.42        # hora inicial (0.0 = medianoche, 0.5 = mediodia)
@@ -192,12 +197,16 @@ var _sun: DirectionalLight3D
 var _moon: DirectionalLight3D
 var _sky: ShaderMaterial
 var _env: Environment
-var _terrain_mat: ShaderMaterial
-var _veg: Node
 var _rain: GPUParticles3D
 var _snow: GPUParticles3D
 var _rain_splash: GPUParticles3D
-var _cam_rig: Node3D
+
+# Referencias a hermanos bajo Main. Se resuelven una sola vez en _ready:
+# si renombras o mueves DayNightCycle, falla aqui con un assert claro.
+@onready var _ground: MeshInstance3D = get_parent().get_node_or_null("Ground") as MeshInstance3D
+@onready var _veg: Vegetation = get_parent().get_node_or_null("Vegetation") as Vegetation
+@onready var _cam_rig: CameraController3D = get_parent().get_node_or_null("CameraRig") as CameraController3D
+@onready var _terrain_mat: ShaderMaterial = _ground.get_surface_override_material(0) as ShaderMaterial if _ground != null else null
 
 # --- Herramientas dev ---
 var dev_paused := false
@@ -245,11 +254,6 @@ func _ready() -> void:
 	we.environment = _env
 	get_parent().add_child.call_deferred(we)
 
-	var ground := get_parent().get_node_or_null("Ground") as MeshInstance3D
-	if ground != null:
-		_terrain_mat = ground.get_surface_override_material(0) as ShaderMaterial
-	_veg = get_parent().get_node_or_null("Vegetation")
-	_cam_rig = get_parent().get_node_or_null("CameraRig")
 	_setup_weather()
 
 
@@ -404,6 +408,7 @@ func _process(delta: float) -> void:
 		_time = fmod(_time + delta / cycle_duration, 1.0)
 		if _time < prev:
 			_day += 1
+			day_changed.emit(_day)
 	_apply_lighting()
 	_apply_weather()
 	_update_ground_weather(delta)

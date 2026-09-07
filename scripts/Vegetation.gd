@@ -1,4 +1,5 @@
 extends Node3D
+class_name Vegetation
 # Vegetacion: arboles 3D de bajo poligono instanciados con MultiMesh sobre los
 # biomas del terreno (bosque denso, llanura escasa) y arbustos de matorral en
 # las llanuras. La colocacion usa la semilla del terreno para que sea estable

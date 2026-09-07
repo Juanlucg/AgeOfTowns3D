@@ -1,7 +1,11 @@
 extends Control
+class_name Minimap
 # Minimapa de vision general en la esquina inferior derecha: textura del mapa
 # completo generada del terreno, rectangulo del area visible de la camara y
 # clic para mover la camara al punto elegido.
+
+@export var camera_path: NodePath
+@export var buildings_path: NodePath
 
 const SIZE := 220
 const MARGIN := 14
@@ -10,17 +14,15 @@ const BORDER_COLOR := Color(0.95, 0.95, 0.92, 0.9)
 const VIEW_RECT_COLOR := Color(1.0, 1.0, 1.0, 0.35)
 
 var _tex: ImageTexture
-var _cam_rig: Node3D
-var _buildings: Node
+var _cam_rig: CameraController3D
+var _buildings: Buildings
 var _buildings_on_map: Array = []
 
 
 func _ready() -> void:
 	_tex = Terrain.make_minimap_texture(TEX_SIZE)
-	_cam_rig = get_node("/root/Main/CameraRig")
-	_buildings = get_node_or_null("/root/Main/Buildings")
-	if _buildings != null:
-		_buildings.building_built.connect(_on_building)
+	_cam_rig = get_node_or_null(camera_path) as CameraController3D
+	_buildings = get_node_or_null(buildings_path) as Buildings
 	mouse_filter = Control.MOUSE_FILTER_PASS
 
 

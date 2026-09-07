@@ -1,7 +1,13 @@
 extends CanvasLayer
+class_name HUD
 # Interfaz de estado global (esquina superior izquierda): hora del dia, dia,
 # estacion, clima y panel de economia (recursos y almacenamiento). Los
 # recursos se refrescan con la señal "changed" de Economy.
+#
+# La dependencia de DayNightCycle se inyecta via `@export` NodePath en el
+# `.tscn`, no por busqueda de ruta absoluta en runtime.
+
+@export var day_night_path: NodePath
 
 const SEASON_COLORS := [
 	Color(0.45, 0.78, 0.35),  # primavera: verde
@@ -11,7 +17,7 @@ const SEASON_COLORS := [
 ]
 const MSG_TIME_MS := 2800
 
-var _day: Node
+var _day: DayNightCycle
 var _season_color: ColorRect
 var _season_label: Label
 var _day_label: Label
@@ -27,7 +33,8 @@ var _msg_timer: Timer
 
 
 func _ready() -> void:
-	_day = get_node("/root/Main/DayNightCycle")
+	_day = get_node_or_null(day_night_path) as DayNightCycle
+	assert(_day != null, "HUD: day_night_path no asignado en el .tscn")
 	layer = 10
 
 	var panel := PanelContainer.new()
