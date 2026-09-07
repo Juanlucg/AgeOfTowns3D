@@ -196,7 +196,7 @@ func _process(delta: float) -> void:
 		return
 	if _pending == &"" or _ghost == null:
 		return
-	if Input.is_key_pressed(KEY_R):
+	if Input.is_action_pressed("rotate_building"):
 		_yaw = fmod(_yaw + ROTATE_SPEED * delta, 360.0)
 	var ground: Vector2 = _cam_rig.screen_to_ground(get_viewport().get_mouse_position())
 	var d := get_def(_pending)
@@ -233,23 +233,24 @@ func _tick_production(delta: float) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventKey and event.pressed and not event.echo:
+	if event.is_action_pressed("select_building_1") and _field_mode:
+		_field_crop = "trigo"
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed("select_building_2") and _field_mode:
+		_field_crop = "zanahoria"
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed("select_building_3") and _field_mode:
+		_field_crop = "bayas"
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed("cancel"):
 		if _field_mode:
-			match event.keycode:
-				KEY_1:
-					_field_crop = "trigo"
-				KEY_2:
-					_field_crop = "zanahoria"
-				KEY_3:
-					_field_crop = "bayas"
-				KEY_ESCAPE:
-					_cancel_field()
-			get_viewport().set_input_as_handled()
-			return
-		if _pending != &"":
-			if event.keycode == KEY_ESCAPE:
-				deselect()
-				get_viewport().set_input_as_handled()
+			_cancel_field()
+		elif _pending != &"":
+			deselect()
+		get_viewport().set_input_as_handled()
 		return
 	if event is InputEventMouseButton:
 		var btn := event as InputEventMouseButton

@@ -228,13 +228,4 @@ func _fmt_hour(h: float) -> String:
 
 
 func _panel_style() -> StyleBoxFlat:
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0, 0, 0, 0.48)
-	sb.border_color = Color(1, 1, 1, 0.22)
-	sb.set_border_width_all(1)
-	sb.set_corner_radius_all(8)
-	sb.content_margin_left = 12
-	sb.content_margin_right = 12
-	sb.content_margin_top = 10
-	sb.content_margin_bottom = 10
-	return sb
+	return UIStyle.dev_panel()

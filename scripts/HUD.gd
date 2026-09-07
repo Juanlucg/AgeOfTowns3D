@@ -117,16 +117,7 @@ func show_message(text: String) -> void:
 
 
 func _panel_style() -> StyleBoxFlat:
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0, 0, 0, 0.45)
-	sb.border_color = Color(1, 1, 1, 0.25)
-	sb.set_border_width_all(1)
-	sb.set_corner_radius_all(6)
-	sb.content_margin_left = 14
-	sb.content_margin_right = 14
-	sb.content_margin_top = 10
-	sb.content_margin_bottom = 10
-	return sb
+	return UIStyle.panel()
 
 
 func _label(font_size: int, bold := false) -> Label:

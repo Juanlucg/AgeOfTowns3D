@@ -69,16 +69,7 @@ func _ready() -> void:
 
 
 func _panel_style() -> StyleBoxFlat:
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0, 0, 0, 0.45)
-	sb.border_color = Color(1, 1, 1, 0.25)
-	sb.set_border_width_all(1)
-	sb.set_corner_radius_all(8)
-	sb.content_margin_left = 14
-	sb.content_margin_right = 14
-	sb.content_margin_top = 10
-	sb.content_margin_bottom = 10
-	return sb
+	return UIStyle.panel()
 
 
 func _on_pressed(type: StringName) -> void:
@@ -107,16 +98,11 @@ func _refresh() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if _buildings.is_placing():
 		return
-	if event is InputEventKey and event.pressed and not event.echo:
-		var idx := -1
-		match event.keycode:
-			KEY_1: idx = 0
-			KEY_2: idx = 1
-			KEY_3: idx = 2
-			KEY_4: idx = 3
-		if idx >= 0:
-			_buildings.select(String(TYPE_KEYS[idx]))
+	for i in TYPE_KEYS.size():
+		if event.is_action_pressed("select_building_%d" % (i + 1)):
+			_buildings.select(String(TYPE_KEYS[i]))
 			get_viewport().set_input_as_handled()
+			return
 
 
 func _cost_text(cost: Dictionary) -> String:
