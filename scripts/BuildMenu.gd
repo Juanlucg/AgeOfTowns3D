@@ -6,7 +6,8 @@ class_name BuildMenu
 
 @export var buildings_path: NodePath
 
-const TYPE_KEYS := ["granero", "granja", "aserradero", "cantera"]
+# IDs en el orden del menu. El registro real vive en Buildings._defs.
+const TYPE_KEYS: Array[StringName] = [&"granero", &"granja", &"aserradero", &"cantera"]
 
 var _buttons := {}
 var _group := ButtonGroup.new()
@@ -44,18 +45,17 @@ func _ready() -> void:
 	row.add_theme_constant_override("separation", 8)
 	vbox.add_child(row)
 
-	for i in TYPE_KEYS.size():
-		var t: String = TYPE_KEYS[i]
-		var d: Dictionary = _buildings.TYPES[t]
+	for id in TYPE_KEYS:
+		var d := _buildings.get_def(id)
 		var b := Button.new()
 		b.toggle_mode = true
 		b.button_group = _group
 		b.custom_minimum_size = Vector2(170, 74)
-		b.text = "%s\n%s\n%s" % [d["name"], d["hint"], _cost_text(d["cost"])]
+		b.text = "%s\n%s\n%s" % [d.display_name, d.hint, _cost_text(d.cost)]
 		b.add_theme_font_size_override("font_size", 13)
-		b.pressed.connect(_on_pressed.bind(t))
+		b.pressed.connect(_on_pressed.bind(id))
 		row.add_child(b)
-		_buttons[t] = b
+		_buttons[id] = b
 
 	_hint = Label.new()
 	_hint.text = "1-4: elegir edificio   |   clic: colocar   |   mantener R: rotar   |   Esc o clic der.: cancelar"
@@ -81,13 +81,13 @@ func _panel_style() -> StyleBoxFlat:
 	return sb
 
 
-func _on_pressed(type: String) -> void:
+func _on_pressed(type: StringName) -> void:
 	if _syncing:
 		return
-	_buildings.select(type)
+	_buildings.select(String(type))
 
 
-func _on_selection_changed(type: String) -> void:
+func _on_selection_changed(type: StringName) -> void:
 	_syncing = true
 	for t in TYPE_KEYS:
 		(_buttons[t] as Button).button_pressed = (t == type)
@@ -96,9 +96,9 @@ func _on_selection_changed(type: String) -> void:
 
 func _refresh() -> void:
 	for t in TYPE_KEYS:
-		var d: Dictionary = _buildings.TYPES[t]
+		var d := _buildings.get_def(t)
 		var b: Button = _buttons[t]
-		if Economy.can_afford(d["cost"]):
+		if Economy.can_afford(d.cost):
 			b.add_theme_color_override("font_color", Color(1, 1, 1))
 		else:
 			b.add_theme_color_override("font_color", Color(1, 0.55, 0.45))
@@ -110,16 +110,12 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		var idx := -1
 		match event.keycode:
-			KEY_1:
-				idx = 0
-			KEY_2:
-				idx = 1
-			KEY_3:
-				idx = 2
-			KEY_4:
-				idx = 3
+			KEY_1: idx = 0
+			KEY_2: idx = 1
+			KEY_3: idx = 2
+			KEY_4: idx = 3
 		if idx >= 0:
-			_buildings.select(TYPE_KEYS[idx])
+			_buildings.select(String(TYPE_KEYS[idx]))
 			get_viewport().set_input_as_handled()
 
 

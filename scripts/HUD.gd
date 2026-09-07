@@ -35,6 +35,8 @@ var _msg_timer: Timer
 func _ready() -> void:
 	_day = get_node_or_null(day_night_path) as DayNightCycle
 	assert(_day != null, "HUD: day_night_path no asignado en el .tscn")
+	_day.time_changed.connect(_on_time_changed)
+	_update()  # pinta una vez con los valores actuales
 	layer = 10
 
 	var panel := PanelContainer.new()
@@ -136,22 +138,17 @@ func _label(font_size: int, bold := false) -> Label:
 	return l
 
 
-func _process(_delta: float) -> void:
-	_update()
+func _on_time_changed(day: int, season: int, hour: float, weather_name: String) -> void:
+	_season_color.color = SEASON_COLORS[season]
+	_season_label.text = _day.get_season_name()
+	_day_label.text = "Día %d" % day
+	_time_label.text = _fmt_hour(hour)
+	_phase_label.text = _phase(hour)
+	_weather_label.text = weather_name
 
 
 func _update() -> void:
-	var season: int = _day.get_season()
-	var key := "%d|%d|%.4f" % [season, _day.get_day(), _day.get_hour()]
-	if key == _last_key:
-		return
-	_last_key = key
-	_season_color.color = SEASON_COLORS[season]
-	_season_label.text = _day.get_season_name()
-	_day_label.text = "Día %d" % _day.get_day()
-	_time_label.text = _fmt_hour(_day.get_hour())
-	_phase_label.text = _phase(_day.get_hour())
-	_weather_label.text = _day.get_weather_name()
+	_on_time_changed(_day.get_day(), _day.get_season(), _day.get_hour(), _day.get_weather_name())
 
 
 func _update_resources() -> void:

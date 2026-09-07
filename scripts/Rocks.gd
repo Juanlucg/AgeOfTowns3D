@@ -20,17 +20,43 @@ const ROCK_COLOR_SLAB := Color(0.55, 0.53, 0.49)
 
 
 func _ready() -> void:
-	var boulder := _build_rock(_mesh_rng(201), 0.7, ROCK_COLOR)
-	var crag := _build_rock(_mesh_rng(202), 1.0, ROCK_COLOR_CRAG)
-	var slab := _build_rock(_mesh_rng(203), 0.45, ROCK_COLOR_SLAB)
-	var sy := [0.7, 1.0, 0.45]
+	# Misma estrategia que Vegetation: el bucle 230x230 con lookups de bioma
+	# se ejecuta en un hilo y los transforms se aplican al MultiMesh en el
+	# hilo principal via call_deferred (MultiMesh no es thread-safe).
+	_meshes[0] = _build_rock(_mesh_rng(201), 0.7, ROCK_COLOR)
+	_meshes[1] = _build_rock(_mesh_rng(202), 1.0, ROCK_COLOR_CRAG)
+	_meshes[2] = _build_rock(_mesh_rng(203), 0.45, ROCK_COLOR_SLAB)
+	_mmis[0] = _create_empty_mmi(_meshes[0])
+	_mmis[1] = _create_empty_mmi(_meshes[1])
+	_mmis[2] = _create_empty_mmi(_meshes[2])
+	WorkerThreadPool.add_task(_populate)
 
-	var boulder_list: Array[Transform3D] = []
-	var crag_list: Array[Transform3D] = []
-	var slab_list: Array[Transform3D] = []
+
+var _meshes: Array = [null, null, null]
+var _mmis: Array = [null, null, null]
+var _boulder_result: Array[Transform3D] = []
+var _crag_result: Array[Transform3D] = []
+var _slab_result: Array[Transform3D] = []
+
+
+func _create_empty_mmi(mesh: ArrayMesh) -> MultiMeshInstance3D:
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.mesh = mesh
+	mm.instance_count = 0
+	var mmi := MultiMeshInstance3D.new()
+	mmi.multimesh = mm
+	add_child(mmi)
+	return mmi
+
+
+func _populate() -> void:
+	var sy := [0.7, 1.0, 0.45]
+	var boulder: Array[Transform3D] = []
+	var crag: Array[Transform3D] = []
+	var slab: Array[Transform3D] = []
 	var rng := RandomNumberGenerator.new()
 	rng.seed = Terrain.SEED + 20
-
 	var x := 0.0
 	while x < Terrain.WORLD_SIZE:
 		var y := 0.0
@@ -61,37 +87,38 @@ func _ready() -> void:
 				var t := Transform3D(basis, Vector3(pos.x, h + sy[variant] * s * 1.0, pos.y))
 				match variant:
 					0:
-						boulder_list.append(t)
+						boulder.append(t)
 					1:
-						crag_list.append(t)
+						crag.append(t)
 					_:
-						slab_list.append(t)
+						slab.append(t)
 			y += STEP
 		x += STEP
+	_boulder_result = boulder
+	_crag_result = crag
+	_slab_result = slab
+	call_deferred("_apply_populated")
 
-	_add_multimesh(boulder, boulder_list)
-	_add_multimesh(crag, crag_list)
-	_add_multimesh(slab, slab_list)
+
+func _apply_populated() -> void:
+	_assign_transforms(_mmis[0], _boulder_result)
+	_assign_transforms(_mmis[1], _crag_result)
+	_assign_transforms(_mmis[2], _slab_result)
+
+
+func _assign_transforms(mmi: MultiMeshInstance3D, transforms: Array[Transform3D]) -> void:
+	if mmi == null or transforms.is_empty():
+		return
+	var mm := mmi.multimesh
+	mm.instance_count = transforms.size()
+	for i in transforms.size():
+		mm.set_instance_transform(i, transforms[i])
 
 
 func _mesh_rng(seed: int) -> RandomNumberGenerator:
 	var rng := RandomNumberGenerator.new()
 	rng.seed = seed
 	return rng
-
-
-func _add_multimesh(mesh: ArrayMesh, transforms: Array[Transform3D]) -> void:
-	if transforms.is_empty():
-		return
-	var mm := MultiMesh.new()
-	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.mesh = mesh
-	mm.instance_count = transforms.size()
-	for i in transforms.size():
-		mm.set_instance_transform(i, transforms[i])
-	var mi := MultiMeshInstance3D.new()
-	mi.multimesh = mm
-	add_child(mi)
 
 
 func clear_near(world_pos: Vector2, radius: float) -> void:

@@ -178,11 +178,11 @@ func _generate() -> void:
 			var cx := nx - 0.5
 			var cy := ny - 0.5
 			var d := sqrt(cx * cx + cy * cy) * 2.0
-			var falloff := _smoothstep(clampf((d - FALLOFF_START) / (FALLOFF_END - FALLOFF_START), 0.0, 1.0))
+			var falloff := TerrainUtils.smoothstep(clampf((d - FALLOFF_START) / (FALLOFF_END - FALLOFF_START), 0.0, 1.0))
 			cont_low[j * ml + i] = base_noise.get_noise_2d(nx, ny) * CONTINENT_GAIN - falloff * EDGE_FALLOFF + CONTINENT_SHORE
 
 	# Suaviza la mascara a baja resolucion (equivale al blur a res. completa)
-	cont_low = _blur_y_dim(_blur_x_dim(cont_low, ml, ml, 1), ml, ml, 1)
+	cont_low = TerrainUtils.blur_y(y), ml, ml, 1)
 	var sea_mask_low := PackedByteArray()
 	sea_mask_low.resize(ml * ml)
 	var land_mask_low := PackedByteArray()
@@ -193,16 +193,16 @@ func _generate() -> void:
 		else:
 			land_mask_low[i] = 1
 
-	var coast_dist_low := _distance_field_dim(sea_mask_low, ml, ml)
-	var land_dist_low := _distance_field_dim(land_mask_low, ml, ml)
+	var coast_dist_low := TerrainUtils.distance_field(sea_mask_low, ml, ml)
+	var land_dist_low := TerrainUtils.distance_field(land_mask_low, ml, ml)
 	var _lr_scale := float(_width) / float(ml)
-	var coast_dist := _upsample_field(coast_dist_low, ml, ml, _lr_scale)
-	var land_dist := _upsample_field(land_dist_low, ml, ml, _lr_scale)
+	var coast_dist := TerrainUtils.upsample_field(coast_dist_low, ml, ml, _width, _height, _lr_scale)
+	var land_dist := TerrainUtils.upsample_field(land_dist_low, ml, ml, _width, _height, _lr_scale)
 
 	var sea_mask := PackedByteArray()
 	sea_mask.resize(n)
 	sea_mask.fill(0)
-	var cont_full := _upsample_field(cont_low, ml, ml)
+	var cont_full := TerrainUtils.upsample_field(cont_low, ml, ml, _width, _height, 1.0)
 	for i in range(n):
 		if cont_full[i] < 0.0:
 			sea_mask[i] = 1
@@ -219,22 +219,22 @@ func _generate() -> void:
 		var j := idx / _width
 		if sea_mask[idx] == 1:
 			var d_land_u: float = land_dist[idx] / _px_per_unit
-			var t := _smoothstep(clampf(d_land_u / WATER_RAMP_U, 0.0, 1.0))
+			var t := TerrainUtils.smoothstep(clampf(d_land_u / WATER_RAMP_U, 0.0, 1.0))
 			heights[idx] = lerpf(0.0, -WATER_DEPTH, t)
 			continue
 		var nx := float(i) / float(_width)
 		var ny := float(j) / float(_height)
 		var d_u: float = coast_dist[idx] / _px_per_unit
 		var ramp := RAMP_MAX * clampf(d_u / RAMP_DIST, 0.0, 1.0)
-		var hills_w := _smoothstep(clampf(d_u / HILL_FADE_U, 0.0, 1.0))
+		var hills_w := TerrainUtils.smoothstep(clampf(d_u / HILL_FADE_U, 0.0, 1.0))
 		var hills: float = hill_noise.get_noise_2d(nx, ny) * HILL_AMP * hills_w
-		var m_mask := _smoothstep(clampf((ramp - MOUNT_RAMP_START) / (RAMP_MAX - MOUNT_RAMP_START), 0.0, 1.0))
+		var m_mask := TerrainUtils.smoothstep(clampf((ramp - MOUNT_RAMP_START) / (RAMP_MAX - MOUNT_RAMP_START), 0.0, 1.0))
 		# Cadenas de montaña: solo donde el ruido de cadenas supera el umbral,
 		# dejando valles y zonas llanas entre sierras.
-		var range_m := _smoothstep(clampf((range_noise.get_noise_2d(nx, ny) - RANGE_SHARP) / 0.5, 0.0, 1.0))
+		var range_m := TerrainUtils.smoothstep(clampf((range_noise.get_noise_2d(nx, ny) - RANGE_SHARP) / 0.5, 0.0, 1.0))
 		# Aspereza por zona: solo algunas cadenas desarrollan picos afilados,
 		# otras quedan como macizos suaves (variedad montañosa).
-		var rugged := _smoothstep(clampf((rugged_noise.get_noise_2d(nx, ny) + 0.1) / 0.5, 0.0, 1.0))
+		var rugged := TerrainUtils.smoothstep(clampf((rugged_noise.get_noise_2d(nx, ny) + 0.1) / 0.5, 0.0, 1.0))
 		var ridge_amp := lerpf(0.35, 1.0, rugged)
 		# Cresta multifractal: varias octavas de (1-|noise|)^2 -> cumbres afiladas
 		# con estribaciones mas suaves alrededor.
@@ -287,7 +287,7 @@ func _generate() -> void:
 		rmax.x = maxf(rmax.x, pt.x)
 		rmax.y = maxf(rmax.y, pt.y)
 	var rbox := Rect2i(int(rmin.x) - pad, int(rmin.y) - pad, int(rmax.x - rmin.x) + pad * 2 + 1, int(rmax.y - rmin.y) + pad * 2 + 1)
-	var river_dist := _distance_field_region(meander_mask, rbox)
+	var river_dist := TerrainUtils.distance_field_region(meander_mask, _width, _height, rbox)
 	var rtotal: float = meander.cum[meander.cum.size() - 1]
 	# Fraccion del cauce (al final) dedicada a fundir la desembocadura con el mar
 	var mouth_frac := 1.0
@@ -302,11 +302,11 @@ func _generate() -> void:
 		# Cerca de la desembocadura el cauce se ensancha, se hace poco profundo
 		# y su nivel de agua baja hasta el nivel del mar: sin escalon submarino
 		# ni "linea" entre el agua del rio y la del mar.
-		var mf := _smoothstep(clampf((s - (1.0 - mouth_frac)) / mouth_frac, 0.0, 1.0))
+		var mf := TerrainUtils.smoothstep(clampf((s - (1.0 - mouth_frac)) / mouth_frac, 0.0, 1.0))
 		var hp := half_px * (1.0 + 1.5 * mf)
 		if rd < hp:
 			var bank: float = heights[idx]
-			var bed := bank - RIVER_CARVE * _smoothstep(1.0 - rd / hp)
+			var bed := bank - RIVER_CARVE * TerrainUtils.smoothstep(1.0 - rd / hp)
 			bed = lerpf(bed, RIVER_MOUTH_BED, mf)
 			heights[idx] = bed
 			# El nivel de agua del cauce declina desde el lago (s=0) hasta el
@@ -344,7 +344,7 @@ func _generate() -> void:
 				target = sl_bottom
 			else:
 				var u := (d_u - rr * 0.4) / (rr - rr * 0.4)
-				var t := _smoothstep(clampf(u, 0.0, 1.0))
+				var t := TerrainUtils.smoothstep(clampf(u, 0.0, 1.0))
 				target = lerpf(sl_bottom, orig, t)
 			# El lago nunca rellena el cauce del rio ya excavado: se mantiene lo
 			# mas profundo de los dos, asi el agua del lago conecta con el rio.
@@ -409,7 +409,7 @@ func _generate() -> void:
 					target = bottom
 				elif d_u <= rr:
 					var u := (d_u - flat_r) / (rr - flat_r)
-					var t := _smoothstep(clampf(u, 0.0, 1.0))
+					var t := TerrainUtils.smoothstep(clampf(u, 0.0, 1.0))
 					target = lerpf(bottom, orig, t)
 				else:
 					target = bottom
@@ -458,7 +458,7 @@ func _generate() -> void:
 					continue
 				var idx := j * _width + i
 				var orig: float = heights[idx]
-				var sw := _smoothstep(clampf(1.0 - ang_deg / MOUNTAIN_LAKE_GAP_ANGLE, 0.0, 1.0))
+				var sw := TerrainUtils.smoothstep(clampf(1.0 - ang_deg / MOUNTAIN_LAKE_GAP_ANGLE, 0.0, 1.0))
 				# Borde exterior del agua: sigue el ruido de la orilla (curvas)
 				# con amplitud suave, para que la bahia sea continua y sin islas.
 				var shore := shore_shape.get_noise_2d(float(i) / _px_per_unit, float(j) / _px_per_unit)
@@ -473,16 +473,16 @@ func _generate() -> void:
 				else:
 					# Valle seco: del borde del agua hacia el bosque.
 					var u := clampf((along_u - bay_end) / 4.0, 0.0, 1.0)
-					var floor_h := lerpf(MOUNTAIN_LAKE_WL + 0.15, orig, _smoothstep(u))
+					var floor_h := lerpf(MOUNTAIN_LAKE_WL + 0.15, orig, TerrainUtils.smoothstep(u))
 					heights[idx] = minf(orig, lerpf(orig, floor_h, sw))
 		break
 
 	# --- Nivel de agua suavizado: se difumina _wl_px para que el borde de
 	# los lagos y el cauce del rio no tengan saltos de 1 px entre celdas ---
-	_wl_px = _blur_y(_blur_x(_wl_px, 1), 1)
+	_wl_px = TerrainUtils.blur_y(y), 1)
 
 	# --- Suavizado final del relieve ---
-	heights = _blur_y(_blur_x(heights, SMOOTH_RADIUS), SMOOTH_RADIUS)
+	heights = TerrainUtils.blur_y(y), SMOOTH_RADIUS)
 	_height_px = heights
 
 	# --- Lagos solo en el interior: se rellenan las masas de agua aisladas
@@ -536,7 +536,7 @@ func _generate() -> void:
 	for i in range(n):
 		if wmask[i] == 1 and wcomp_ocean[wcomp[i]]:
 			wocean[i] = 1
-	var wocean_dist := _distance_field(wocean)
+	var wocean_dist := TerrainUtils.distance_field(wocean, _width, _height)
 	var wlake_min := {}
 	for i in range(n):
 		if wmask[i] == 0:
@@ -587,7 +587,7 @@ func _generate() -> void:
 		else:
 			cls[idx] = CLASS_FOREST if forest_arr[idx] > FOREST_THRESHOLD else CLASS_PLAINS
 	_class_px = cls
-	_water_dist_px = _distance_field(water_mask)
+	_water_dist_px = TerrainUtils.distance_field(water_mask, _width, _height)
 
 	var counts := [0, 0, 0, 0, 0, 0]
 	for i in range(n):
@@ -827,10 +827,6 @@ func _highest_pixel(heights: PackedFloat32Array) -> int:
 	return best
 
 
-func _smoothstep(t: float) -> float:
-	return t * t * (3.0 - 2.0 * t)
-
-
 # Direccion de la abertura del lago de montaña: hacia el bosque (el terreno mas
 # bajo que se encuentra al salir de la sierra), para que el valle se abra al
 # terreno llano y no a otra pared de montaña.
@@ -865,156 +861,6 @@ func _lake_gap_length(heights: PackedFloat32Array, center: Vector2, radius_u: fl
 	return MOUNTAIN_LAKE_GAP_MAX_LEN
 
 
-func _distance_field(inside: PackedByteArray) -> PackedFloat32Array:
-	return _distance_field_dim(inside, _width, _height)
-
-
-func _distance_field_dim(inside: PackedByteArray, w: int, h: int) -> PackedFloat32Array:
-	var dist := PackedFloat32Array()
-	dist.resize(w * h)
-	dist.fill(1.0e9)
-	for i in range(w * h):
-		if inside[i] == 1:
-			dist[i] = 0.0
-
-	for j in range(h):
-		var row := j * w
-		for i in range(w):
-			var idx := row + i
-			var d := dist[idx]
-			if i > 0:
-				d = minf(d, dist[idx - 1] + 1.0)
-			if j > 0:
-				d = minf(d, dist[idx - w] + 1.0)
-			if i > 0 and j > 0:
-				d = minf(d, dist[idx - w - 1] + 1.41421)
-			if i < w - 1 and j > 0:
-				d = minf(d, dist[idx - w + 1] + 1.41421)
-			dist[idx] = d
-
-	for j in range(h - 1, -1, -1):
-		var row := j * w
-		for i in range(w - 1, -1, -1):
-			var idx := row + i
-			var d := dist[idx]
-			if i < w - 1:
-				d = minf(d, dist[idx + 1] + 1.0)
-			if j < h - 1:
-				d = minf(d, dist[idx + w] + 1.0)
-			if i < w - 1 and j < h - 1:
-				d = minf(d, dist[idx + w + 1] + 1.41421)
-			if i > 0 and j < h - 1:
-				d = minf(d, dist[idx + w - 1] + 1.41421)
-			dist[idx] = d
-	return dist
-
-
-func _distance_field_region(inside: PackedByteArray, box: Rect2i) -> PackedFloat32Array:
-	# Campo de distancias calculado solo dentro de una region (la caja del rio).
-	# Los pixeles fuera de la region quedan con distancia enorme (no se usan).
-	var dist := PackedFloat32Array()
-	dist.resize(_width * _height)
-	dist.fill(1.0e9)
-	var x0 := clampi(box.position.x, 0, _width - 1)
-	var y0 := clampi(box.position.y, 0, _height - 1)
-	var x1 := clampi(box.end.x - 1, 0, _width - 1)
-	var y1 := clampi(box.end.y - 1, 0, _height - 1)
-	for j in range(y0, y1 + 1):
-		for i in range(x0, x1 + 1):
-			if inside[j * _width + i] == 1:
-				dist[j * _width + i] = 0.0
-	for j in range(y0, y1 + 1):
-		for i in range(x0, x1 + 1):
-			var idx := j * _width + i
-			var d := dist[idx]
-			if i > x0:
-				d = minf(d, dist[idx - 1] + 1.0)
-			if j > y0:
-				d = minf(d, dist[idx - _width] + 1.0)
-			if i > x0 and j > y0:
-				d = minf(d, dist[idx - _width - 1] + 1.41421)
-			if i < x1 and j > y0:
-				d = minf(d, dist[idx - _width + 1] + 1.41421)
-			dist[idx] = d
-	for j in range(y1, y0 - 1, -1):
-		for i in range(x1, x0 - 1, -1):
-			var idx := j * _width + i
-			var d := dist[idx]
-			if i < x1:
-				d = minf(d, dist[idx + 1] + 1.0)
-			if j < y1:
-				d = minf(d, dist[idx + _width] + 1.0)
-			if i < x1 and j < y1:
-				d = minf(d, dist[idx + _width + 1] + 1.41421)
-			if i > x0 and j < y1:
-				d = minf(d, dist[idx + _width - 1] + 1.41421)
-			dist[idx] = d
-	return dist
-
-
-func _upsample_field(low: PackedFloat32Array, lw: int, lh: int, scale := 1.0) -> PackedFloat32Array:
-	# Upscale bilineal de un campo de baja resolucion al tamano completo del mapa.
-	# scale multiplica el resultado (p.ej. para pasar distancias de pixeles
-	# low-res a pixeles del mapa completo).
-	var out := PackedFloat32Array()
-	out.resize(_width * _height)
-	for j in range(_height):
-		var fy := (float(j) + 0.5) / float(_height) * float(lh) - 0.5
-		var y0 := clampi(int(floor(fy)), 0, lh - 1)
-		var y1 := mini(y0 + 1, lh - 1)
-		var ty: float = fy - floor(fy)
-		for i in range(_width):
-			var fx := (float(i) + 0.5) / float(_width) * float(lw) - 0.5
-			var x0 := clampi(int(floor(fx)), 0, lw - 1)
-			var x1 := mini(x0 + 1, lw - 1)
-			var tx: float = fx - floor(fx)
-			var v00 := low[y0 * lw + x0]
-			var v10 := low[y0 * lw + x1]
-			var v01 := low[y1 * lw + x0]
-			var v11 := low[y1 * lw + x1]
-			out[j * _width + i] = lerpf(lerpf(v00, v10, tx), lerpf(v01, v11, tx), ty) * scale
-	return out
-
-
-func _blur_x(src: PackedFloat32Array, radius: int) -> PackedFloat32Array:
-	return _blur_x_dim(src, _width, _height, radius)
-
-
-func _blur_y(src: PackedFloat32Array, radius: int) -> PackedFloat32Array:
-	return _blur_y_dim(src, _width, _height, radius)
-
-
-func _blur_x_dim(src: PackedFloat32Array, w: int, h: int, radius: int) -> PackedFloat32Array:
-	var out := src.duplicate()
-	var pref := PackedFloat32Array()
-	pref.resize(w + 1)
-	for j in range(h):
-		var row := j * w
-		pref[0] = 0.0
-		for i in range(w):
-			pref[i + 1] = pref[i] + src[row + i]
-		for i in range(w):
-			var lo := maxi(0, i - radius)
-			var hi := mini(w - 1, i + radius)
-			out[row + i] = (pref[hi + 1] - pref[lo]) / float(hi - lo + 1)
-	return out
-
-
-func _blur_y_dim(src: PackedFloat32Array, w: int, h: int, radius: int) -> PackedFloat32Array:
-	var out := src.duplicate()
-	var pref := PackedFloat32Array()
-	pref.resize(h + 1)
-	for i in range(w):
-		pref[0] = 0.0
-		for j in range(h):
-			pref[j + 1] = pref[j] + src[j * w + i]
-		for j in range(h):
-			var lo := maxi(0, j - radius)
-			var hi := mini(h - 1, j + radius)
-			out[j * w + i] = (pref[hi + 1] - pref[lo]) / float(hi - lo + 1)
-	return out
-
-
 # ---------------------------------------------------------------------------
 # API de consulta
 # ---------------------------------------------------------------------------
@@ -1024,42 +870,12 @@ func _pixel(p: Vector2) -> Vector2i:
 	return Vector2i(px, py)
 
 
-func _catmull1(p0: float, p1: float, p2: float, p3: float, t: float) -> float:
-	var t2 := t * t
-	var t3 := t2 * t
-	return 0.5 * (2.0 * p1 + (p2 - p0) * t + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2 + (3.0 * p1 - p0 - 3.0 * p2 + p3) * t3)
-
-
-func _bicubic(data: PackedFloat32Array, w: int, h: int, fx: float, fy: float) -> float:
-	# Interpolacion Catmull-Rom C1: suaviza los escalones de la rejilla de
-	# pixeles (causa del borde de agua "serrado") sin emborronar el relieve.
-	# Sin reservas de arrays por llamada (se usa muchisimo al construir la
-	# malla y las allocaciones eran el cuello de botella).
-	var x0 := int(fx) - 1
-	var y0 := int(fy) - 1
-	var tx := fx - int(fx)
-	var ty := fy - int(fy)
-	var ya := clampi(y0, 0, h - 1)
-	var yb := clampi(y0 + 1, 0, h - 1)
-	var yc := clampi(y0 + 2, 0, h - 1)
-	var yd := clampi(y0 + 3, 0, h - 1)
-	var xa := clampi(x0, 0, w - 1)
-	var xb := clampi(x0 + 1, 0, w - 1)
-	var xc := clampi(x0 + 2, 0, w - 1)
-	var xd := clampi(x0 + 3, 0, w - 1)
-	var r0 := _catmull1(data[ya * w + xa], data[yb * w + xa], data[yc * w + xa], data[yd * w + xa], ty)
-	var r1 := _catmull1(data[ya * w + xb], data[yb * w + xb], data[yc * w + xb], data[yd * w + xb], ty)
-	var r2 := _catmull1(data[ya * w + xc], data[yb * w + xc], data[yc * w + xc], data[yd * w + xc], ty)
-	var r3 := _catmull1(data[ya * w + xd], data[yb * w + xd], data[yc * w + xd], data[yd * w + xd], ty)
-	return _catmull1(r0, r1, r2, r3, tx)
-
-
 func height_at(p: Vector2) -> float:
 	if _width == 0:
 		return 0.0
 	var fx: float = clampf(p.x / WORLD_SIZE, 0.0, 1.0) * float(_width - 1)
 	var fy: float = clampf(p.y / WORLD_SIZE, 0.0, 1.0) * float(_height - 1)
-	return _bicubic(_height_px, _width, _height, fx, fy)
+	return TerrainUtils.bicubic(_height_px, _width, _height, fx, fy)
 
 
 func water_level_at(p: Vector2) -> float:

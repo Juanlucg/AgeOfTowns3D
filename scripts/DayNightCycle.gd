@@ -10,6 +10,7 @@ class_name DayNightCycle
 # Emite `day_changed(day)` cada vez que avanza un dia (consumidores: Economy).
 
 signal day_changed(day: int)
+signal time_changed(day: int, season: int, hour: float, weather_name: String)
 
 @export var cycle_duration := 600.0   # segundos por dia completo (10 min)
 @export var start_time := 0.42        # hora inicial (0.0 = medianoche, 0.5 = mediodia)
@@ -402,6 +403,10 @@ func _update_splashes(rain: float) -> void:
 		_rain_splash.visible = false
 
 
+var _tick := 0
+const TICK_EMIT_INTERVAL := 6  # emite time_changed cada ~6 frames (10Hz a 60fps)
+
+
 func _process(delta: float) -> void:
 	if not dev_paused:
 		var prev := _time
@@ -413,6 +418,10 @@ func _process(delta: float) -> void:
 	_apply_weather()
 	_update_ground_weather(delta)
 	_update_rain_height()
+	_tick += 1
+	if _tick >= TICK_EMIT_INTERVAL:
+		_tick = 0
+		time_changed.emit(_day, get_season(), _time * 24.0, get_weather_name())
 
 
 # --- Consulta de fecha (para la interfaz y futuras mecanicas) ---

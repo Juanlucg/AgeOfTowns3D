@@ -61,9 +61,9 @@ func _draw() -> void:
 		draw_circle(_to_minimap(b.pos), 3.0, b.color)
 
 
-func _on_building(type: String, pos: Vector2) -> void:
-	var d: Dictionary = _buildings.TYPES[type]
-	_buildings_on_map.append({"pos": pos, "color": d["color"]})
+func _on_building(type: StringName, pos: Vector2) -> void:
+	var d := _buildings.get_def(type)
+	_buildings_on_map.append({"pos": pos, "color": d.color})
 
 
 func _gui_input(event: InputEvent) -> void:

@@ -46,15 +46,45 @@ var _bush_mat: ShaderMaterial
 
 
 func _ready() -> void:
-	var pine := _build_pine()
-	var round := _build_round()
-	var bush := _build_bush()
-	var pine_transforms: Array[Transform3D] = []
-	var round_transforms: Array[Transform3D] = []
-	var bush_transforms: Array[Transform3D] = []
+	# Construccion en hilo: 230x230 = 53k iteraciones (ruido + lookup de bioma
+	# + RNG). En el hilo principal era un freeze de varios segundos al arrancar.
+	# Se delega al WorkerThreadPool y cuando termina se aplican los resultados
+	# en el hilo principal via call_deferred (MultiMesh no es thread-safe).
+	_meshes[0] = _build_pine()
+	_meshes[1] = _build_round()
+	_meshes[2] = _build_bush()
+	_mmis[0] = _create_empty_mmi(_meshes[0])
+	_mmis[1] = _create_empty_mmi(_meshes[1])
+	_mmis[2] = _create_empty_mmi(_meshes[2])
+	WorkerThreadPool.add_task(_populate)
+
+
+# Referencias para poblar desde el hilo via deferred call.
+var _meshes: Array = [null, null, null]   # [pine, round, bush]
+var _mmis: Array = [null, null, null]
+var _pine_result: Array[Transform3D] = []
+var _round_result: Array[Transform3D] = []
+var _bush_result: Array[Transform3D] = []
+
+
+func _create_empty_mmi(mesh: ArrayMesh) -> MultiMeshInstance3D:
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.mesh = mesh
+	mm.instance_count = 0
+	var mmi := MultiMeshInstance3D.new()
+	mmi.multimesh = mm
+	add_child(mmi)
+	return mmi
+
+
+# Corre en el hilo: solo lee Terrain (constantes) y un RNG local.
+func _populate() -> void:
+	var pine: Array[Transform3D] = []
+	var round: Array[Transform3D] = []
+	var bush: Array[Transform3D] = []
 	var rng := RandomNumberGenerator.new()
 	rng.seed = Terrain.SEED + 10
-
 	var x := 0.0
 	while x < Terrain.WORLD_SIZE:
 		var y := 0.0
@@ -77,20 +107,35 @@ func _ready() -> void:
 			var pos := p + Vector2(rng.randf_range(-JITTER, JITTER), rng.randf_range(-JITTER, JITTER))
 			if _plantable_at(pos):
 				if bush_prob > 0.0 and rng.randf() < bush_prob:
-					bush_transforms.append(_make_transform(pos, rng, 0.7, 1.4))
+					bush.append(_make_transform(pos, rng, 0.7, 1.4))
 				elif tree_prob > 0.0 and rng.randf() < tree_prob:
 					var is_pine := (not round_only) and rng.randf() < PINE_RATIO
 					var t := _make_transform(pos, rng, SCALE_MIN, SCALE_MAX)
 					if is_pine:
-						pine_transforms.append(t)
+						pine.append(t)
 					else:
-						round_transforms.append(t)
+						round.append(t)
 			y += STEP
 		x += STEP
+	_pine_result = pine
+	_round_result = round
+	_bush_result = bush
+	call_deferred("_apply_populated")
 
-	_add_multimesh(pine, pine_transforms)
-	_add_multimesh(round, round_transforms)
-	_add_multimesh(bush, bush_transforms)
+
+func _apply_populated() -> void:
+	_assign_transforms(_mmis[0], _pine_result)
+	_assign_transforms(_mmis[1], _round_result)
+	_assign_transforms(_mmis[2], _bush_result)
+
+
+func _assign_transforms(mmi: MultiMeshInstance3D, transforms: Array[Transform3D]) -> void:
+	if mmi == null or transforms.is_empty():
+		return
+	var mm := mmi.multimesh
+	mm.instance_count = transforms.size()
+	for i in transforms.size():
+		mm.set_instance_transform(i, transforms[i])
 
 
 # True si la posicion final es valida para plantar: bosque o llanura, con una
@@ -109,20 +154,6 @@ func _make_transform(pos: Vector2, rng: RandomNumberGenerator, s_min: float, s_m
 	var yaw := rng.randf_range(0.0, TAU)
 	var basis := Basis(Vector3.UP, yaw).scaled(Vector3(s, s, s))
 	return Transform3D(basis, Vector3(pos.x, h, pos.y))
-
-
-func _add_multimesh(mesh: ArrayMesh, transforms: Array[Transform3D]) -> void:
-	if transforms.is_empty():
-		return
-	var mm := MultiMesh.new()
-	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.mesh = mesh
-	mm.instance_count = transforms.size()
-	for i in transforms.size():
-		mm.set_instance_transform(i, transforms[i])
-	var mi := MultiMeshInstance3D.new()
-	mi.multimesh = mm
-	add_child(mi)
 
 
 func _material(foliage_y: float) -> ShaderMaterial:
