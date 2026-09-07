@@ -6,6 +6,9 @@ class_name BuildMenu
 
 @export var buildings_path: NodePath
 
+# Carga explicita (no depende de la resolucion de class_name por el indice).
+const UIStyle := preload("res://scripts/UIStyle.gd")
+
 # IDs en el orden del menu. El registro real vive en Buildings._defs.
 const TYPE_KEYS: Array[StringName] = [&"granero", &"granja", &"aserradero", &"cantera"]
 

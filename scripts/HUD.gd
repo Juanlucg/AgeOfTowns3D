@@ -9,6 +9,9 @@ class_name HUD
 
 @export var day_night_path: NodePath
 
+# Carga explicita (no depende de la resolucion de class_name por el indice).
+const UIStyle := preload("res://scripts/UIStyle.gd")
+
 const SEASON_COLORS := [
 	Color(0.45, 0.78, 0.35),  # primavera: verde
 	Color(0.95, 0.78, 0.25),  # verano: dorado

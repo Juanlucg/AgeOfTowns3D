@@ -9,6 +9,9 @@ class_name DevTools
 @export var day_night_path: NodePath
 @export var buildings_path: NodePath
 
+# Carga explicita (no depende de la resolucion de class_name por el indice).
+const UIStyle := preload("res://scripts/UIStyle.gd")
+
 var _day: DayNightCycle
 var _buildings: Buildings
 var _hour_slider: HSlider
