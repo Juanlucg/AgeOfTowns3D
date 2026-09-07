@@ -1,8 +1,8 @@
 extends RefCounted
 class_name UIStyle
-# Estilos UI compartidos. Antes cada CanvasLayer (HUD, BuildMenu, DevTools)
-# tenia su propia copia de _panel_style() con pequenas variaciones. Aqui se
-# centralizan para que un cambio de tema se haga en un solo sitio.
+## Estilos UI compartidos por HUD, BuildMenu y DevTools.
+##
+## Centraliza [StyleBoxFlat] para que un cambio de tema se haga en un sitio.
 
 const PANEL_BG := Color(0, 0, 0, 0.45)
 const PANEL_BORDER := Color(1, 1, 1, 0.25)

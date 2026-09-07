@@ -27,6 +27,8 @@ func _ready() -> void:
 	layer = 11
 	_day = get_node_or_null(day_night_path) as DayNightCycle
 	_buildings = get_node_or_null(buildings_path) as Buildings
+	if _day != null:
+		_day.time_changed.connect(_on_time_changed)
 
 	var root := Control.new()
 	root.set_anchors_preset(Control.PRESET_TOP_RIGHT)
@@ -151,15 +153,17 @@ func _ready() -> void:
 	vbox.add_child(hint)
 
 	_sync_from_state()
+	# Sin _process: el slider sigue a DayNightCycle via la misma senal
+	# time_changed que usa HUD (10 Hz en vez de 60 Hz).
 
 
-func _process(_delta: float) -> void:
+func _on_time_changed(_day: int, _season: int, hour: float, _weather: String) -> void:
 	if _updating:
 		return
-	if _day != null and not _hour_slider.has_focus() and not _day.dev_paused:
+	if not _hour_slider.has_focus() and not _day.dev_paused:
 		_updating = true
-		_hour_slider.value = _day.get_hour()
-		_hour_label.text = _fmt_hour(_day.get_hour())
+		_hour_slider.value = hour
+		_hour_label.text = _fmt_hour(hour)
 		_updating = false
 
 

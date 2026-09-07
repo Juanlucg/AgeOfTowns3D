@@ -18,15 +18,23 @@ var _cam_rig: CameraController3D
 var _buildings: Buildings
 var _buildings_on_map: Array = []
 
+# Cache del frustum del minimapa. Solo se recalcula cuando la camara emite
+# viewport_changed (evita 4 ray-march por frame = ~240 por segundo).
+var _frustum_pts: PackedVector2Array = PackedVector2Array()
+
 
 func _ready() -> void:
 	_tex = Terrain.make_minimap_texture(TEX_SIZE)
 	_cam_rig = get_node_or_null(camera_path) as CameraController3D
 	_buildings = get_node_or_null(buildings_path) as Buildings
+	if _cam_rig != null:
+		_cam_rig.viewport_changed.connect(_on_viewport_changed)
+		_recompute_frustum()
 	mouse_filter = Control.MOUSE_FILTER_PASS
 
 
 func _process(_delta: float) -> void:
+	# Redibujar edificios nuevos; el frustum se redibuja por la senal.
 	queue_redraw()
 
 
@@ -39,6 +47,24 @@ func _to_minimap(world: Vector2) -> Vector2:
 	return r.position + Vector2(world.x / Terrain.WORLD_SIZE * SIZE, world.y / Terrain.WORLD_SIZE * SIZE)
 
 
+func _on_viewport_changed() -> void:
+	_recompute_frustum()
+	queue_redraw()
+
+
+func _recompute_frustum() -> void:
+	if _cam_rig == null:
+		_frustum_pts = PackedVector2Array()
+		return
+	var vs := get_viewport_rect().size
+	_frustum_pts = PackedVector2Array([
+		_to_minimap(_cam_rig.screen_to_ground(Vector2(0, 0))),
+		_to_minimap(_cam_rig.screen_to_ground(Vector2(vs.x, 0))),
+		_to_minimap(_cam_rig.screen_to_ground(Vector2(vs.x, vs.y))),
+		_to_minimap(_cam_rig.screen_to_ground(Vector2(0, vs.y))),
+	])
+
+
 func _draw() -> void:
 	var r := _minimap_rect()
 	draw_rect(Rect2(r.position - Vector2(3, 3), r.size + Vector2(6, 6)), Color(0, 0, 0, 0.45))
@@ -47,14 +73,8 @@ func _draw() -> void:
 	draw_rect(r, BORDER_COLOR, false, 2.0)
 	if _cam_rig == null:
 		return
-	var vs := get_viewport_rect().size
-	var pts := PackedVector2Array([
-		_to_minimap(_cam_rig.screen_to_ground(Vector2(0, 0))),
-		_to_minimap(_cam_rig.screen_to_ground(Vector2(vs.x, 0))),
-		_to_minimap(_cam_rig.screen_to_ground(Vector2(vs.x, vs.y))),
-		_to_minimap(_cam_rig.screen_to_ground(Vector2(0, vs.y))),
-	])
-	draw_polygon(pts, PackedColorArray([VIEW_RECT_COLOR]))
+	if _frustum_pts.size() == 4:
+		draw_polygon(_frustum_pts, PackedColorArray([VIEW_RECT_COLOR]))
 	var c := _cam_rig.global_position
 	draw_circle(_to_minimap(Vector2(c.x, c.z)), 3.0, Color(1, 1, 1, 0.9))
 	for b in _buildings_on_map:

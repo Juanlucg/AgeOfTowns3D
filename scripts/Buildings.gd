@@ -1,20 +1,18 @@
 extends Node3D
 class_name Buildings
-# Construcciones del pueblo. Se eligen desde el menu inferior (o teclas 1-4):
-# granero (almacen), granja (casita + campo de cultivo elegido), aserradero
-# (cabaña abierta con mesa de corte) y cantera (piedra).
-# Mientras un tipo esta seleccionado se muestra un fantasma translucido que
-# sigue al raton sobre el terreno; R lo rota y el clic lo coloca si el terreno
-# y los recursos lo permiten. La base se apoya en el punto mas alto del solar
-# y, donde el terreno baja, se genera una pared de piedras para que el edificio
-# nunca quede flotando.
-# La granja tiene un segundo paso: tras colocar la casita se delimita una zona
-# (rectangulo desde la casita hasta el raton) y se elige el cultivo con 1/2/3.
-#
-# Modulos extraidos:
-#   - BuildingDef.gd  -> Resource con los datos inmutables de cada tipo.
-#   - BuildingMeshes.gd -> constructores puros de geometria.
-#   - FieldMesh.gd    -> geometria del campo de cultivo.
+## Construcciones del pueblo. Gestionan colocacion, validacion, produccion
+## y registro de edificios colocados.
+##
+## Se eligen desde el menu inferior (o teclas 1-4):
+## granero (almacen), granja (casita + campo), aserradero, cantera.
+## Mientras un tipo esta seleccionado se muestra un fantasma translucido que
+## sigue al raton sobre el terreno; R lo rota y el clic lo coloca.
+## La base se apoya en el punto mas alto del solar; donde el terreno baja,
+## se genera una pared de piedras para que el edificio nunca quede flotando.
+## La granja tiene un segundo paso: tras colocar la casita se delimita una zona
+## y se elige el cultivo con 1/2/3.
+##
+## Modulos: [BuildingDef] (datos), [BuildingMeshes] (geometria), [FieldMesh] (campo).
 
 signal building_built(type: StringName, pos: Vector2)
 signal selection_changed(type: StringName)
@@ -54,14 +52,14 @@ var _yaw := 0.0
 var _ghost: Node3D = null
 var _ghost_building: Node3D = null
 var _ghost_foundation: Node3D = null
-var _placed: Array = []
+var _placed: Array[BuildingRecord] = []
 var _cam_rig: CameraController3D
 
 var _field_mode := false
 var _field_start := Vector2.ZERO
 var _field_crop := "trigo"
 var _field_ghost: Node3D = null
-var _field_farm: Dictionary = {}
+var _field_farm: BuildingRecord = null
 var _field_yaw := 0.0
 
 # --- Herramientas dev ---
@@ -218,18 +216,33 @@ func _update_ghost_material(color: Color) -> void:
 			(c as MeshInstance3D).material_override = m
 
 
-func _tick_production(delta: float) -> void:
-	for b in _placed:
-		if b.get("dev", false):
-			continue
-		var d := get_def(b.type)
-		if not d.can_produce():
-			continue
-		b.timer += delta
-		if b.timer >= d.prod_interval:
-			b.timer = 0.0
-			var amt: float = b.get("amount", d.prod_amount)
-			Economy.add(String(d.prod_resource), amt)
+# Antes: loop global cada frame sobre todos los edificios.
+# Ahora: cada edificio con produccion tiene su propio Timer como hijo del
+# node. Al demolir, queue_free() del node se lleva el Timer consigo. Sin
+# polling, sin iteraciones innecesarias.
+func _tick_production(_delta: float) -> void:
+	pass
+
+
+func _attach_production_timer(rec: BuildingRecord) -> void:
+	var d := get_def(rec.type)
+	if rec.dev or not d.can_produce():
+		return
+	var timer := Timer.new()
+	timer.name = "ProductionTimer"
+	timer.wait_time = d.prod_interval
+	timer.one_shot = false
+	timer.autostart = true
+	timer.timeout.connect(_on_production_timer.bind(rec))
+	rec.node.add_child(timer)
+
+
+func _on_production_timer(rec: BuildingRecord) -> void:
+	if rec == null or rec.node == null or not is_instance_valid(rec.node):
+		return
+	var d := get_def(rec.type)
+	var amt: float = rec.amount if rec.amount > 0.0 else d.prod_amount
+	Economy.add(String(d.prod_resource), amt)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -296,8 +309,9 @@ func _place() -> void:
 	node.position = Vector3(ground.x, base_h, ground.y)
 	node.add_child(_make_foundation(ground, d.footprint, base_h, null))
 	add_child(node)
-	var rec := {"type": _pending, "pos": ground, "yaw": _yaw, "node": node, "timer": 0.0, "dev": dev_free_build}
+	var rec := BuildingRecord.new(_pending, ground, _yaw, node, dev_free_build)
 	_placed.append(rec)
+	_attach_production_timer(rec)
 	building_built.emit(_pending, ground)
 	place_clear_requested.emit(ground, d.footprint + 1.0)
 	message_requested.emit("%s construido" % d.display_name)
@@ -352,8 +366,8 @@ func _confirm_field() -> void:
 	var center := Vector2((rmin.x + rmax.x) * 0.5, (rmin.y + rmax.y) * 0.5)
 	var field_radius := maxf(w, d) + 1.5
 	place_clear_requested.emit(center, field_radius)
-	_field_farm["amount"] = clampf(w * d * FIELD_RATE, 1.0, 25.0)
-	_field_farm["crop"] = _field_crop
+	_field_farm.amount = clampf(w * d * FIELD_RATE, 1.0, 25.0)
+	_field_farm.crop = _field_crop
 	Economy.changed.emit()
 	var area := int(round(w * d))
 	var crop_name: String = CROP_NAMES[_field_crop]
@@ -363,8 +377,8 @@ func _confirm_field() -> void:
 
 func _cancel_field() -> void:
 	_placed.erase(_field_farm)
-	if _field_farm.has("node") and _field_farm["node"] != null:
-		(_field_farm["node"] as Node).queue_free()
+	if _field_farm != null and _field_farm.node != null:
+		_field_farm.node.queue_free()
 	var cost: Dictionary = get_def(&"granja").cost
 	for k in cost:
 		Economy.amounts[k] = Economy.amounts[k] + cost[k]
@@ -378,7 +392,7 @@ func _end_field_mode() -> void:
 	if _field_ghost != null:
 		_field_ghost.queue_free()
 		_field_ghost = null
-	_field_farm = {}
+	_field_farm = null
 	deselect()
 
 

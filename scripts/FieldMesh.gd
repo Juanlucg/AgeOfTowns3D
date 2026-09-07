@@ -1,14 +1,11 @@
 extends RefCounted
 class_name FieldMesh
-# Genera la geometria del campo de cultivo (suelo adaptado al relieve, valla,
-# postes y plantas en grid). Antes era un metodo privado de 200 lineas
-# dentro de Buildings.gd. Se extrae para:
-#   - Aislar la complejidad geometrica del flujo de colocacion.
-#   - Permitir regenerar campos sin recrear Buildings.
-#   - Testear la generacion sin escena.
-#
-# Todas las variables locales usan `:= float / Variant` explicito para evitar
-# errores de inferencia en GDScript 4.7 con Callable (get_height.call()).
+## Geometria del campo de cultivo: suelo adaptado al relieve, valla perimetral
+## y plantas en grid via MultiMesh.
+##
+## Extraido de [Buildings] para aislar la complejidad geometrica.
+## Acepta un [Callable] opcional [param get_height] para tests con altura
+## sintetica (por defecto usa [Terrain].height_at).
 
 const FIELD_SPACING := 0.55
 const SOIL_COLOR := Color(0.40, 0.28, 0.14)

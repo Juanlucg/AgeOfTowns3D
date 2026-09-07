@@ -1,11 +1,10 @@
 extends CanvasLayer
 class_name HUD
-# Interfaz de estado global (esquina superior izquierda): hora del dia, dia,
-# estacion, clima y panel de economia (recursos y almacenamiento). Los
-# recursos se refrescan con la señal "changed" de Economy.
-#
-# La dependencia de DayNightCycle se inyecta via `@export` NodePath en el
-# `.tscn`, no por busqueda de ruta absoluta en runtime.
+## Interfaz de estado global (esquina superior izquierda): estacion, dia,
+## hora, fase del dia, clima y panel de economia.
+##
+## Se actualiza con la senal [signal DayNightCycle.time_changed] (~10 Hz)
+## en vez de polleo por frame.
 
 @export var day_night_path: NodePath
 

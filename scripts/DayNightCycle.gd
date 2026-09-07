@@ -1,13 +1,11 @@
 extends Node3D
 class_name DayNightCycle
-# Ciclo dia/noche. Rota el sol alrededor del mundo, gestiona una luna para la
-# noche y ajusta un cielo procedural con shader (WorldEnvironment) junto con
-# la luz ambiental segun la posicion del sol.
-#
-# El sol y la luna se dibujan dentro del propio shader del cielo: sin sprites,
-# se desvanecen gradualmente cerca del horizonte y no generan artefactos.
-#
-# Emite `day_changed(day)` cada vez que avanza un dia (consumidores: Economy).
+## Ciclo dia/noche con 4 estaciones, clima (despejado/lluvia/nieve) y ciclo
+## lunar. Gestiona sol, luna, cielo procedural, niebla, acumulacion de
+## nieve en el terreno, agua mojada y ripples de lluvia.
+##
+## Emite [signal day_changed] cada vez que avanza un dia y
+## [signal time_changed] a ~10 Hz con la info que HUD/DevTools muestran.
 
 signal day_changed(day: int)
 signal time_changed(day: int, season: int, hour: float, weather_name: String)

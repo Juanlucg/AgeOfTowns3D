@@ -1,9 +1,10 @@
 extends Resource
 class_name BuildingDef
-# Definicion inmutable de un tipo de edificio. Antes era un Dictionary dentro
-# de Buildings.gd (sin tipos, sin validacion). Ahora es un Resource: tipos
-# fuertes, autocompletado, editable como .tres en el inspector, y permite
-# anadir tipos nuevos sin tocar codigo.
+## Definicion inmutable de un tipo de edificio: coste, produccion, huella,
+## biomas validos y pista visual.
+##
+## Reemplaza el antiguo Dictionary en [Buildings]. Como Resource, se puede
+## guardar como [code].tres[/code] y editar desde el inspector.
 
 enum Biome { LLANURA = 0, BOSQUE = 1, MONTANA = 2 }
 

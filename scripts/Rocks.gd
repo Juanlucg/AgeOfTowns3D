@@ -122,14 +122,21 @@ func _mesh_rng(seed: int) -> RandomNumberGenerator:
 
 
 func clear_near(world_pos: Vector2, radius: float) -> void:
+	# AABB pre-filtro: si la MultiMesh no toca la caja del radio, nada que limpiar.
+	var query_box := AABB(
+		Vector3(world_pos.x - radius, -1000.0, world_pos.y - radius),
+		Vector3(radius * 2.0, 2000.0, radius * 2.0),
+	)
 	for c in get_children():
 		if c is MultiMeshInstance3D:
 			var mm: MultiMesh = c.multimesh
+			if not mm.get_aabb().intersects(query_box):
+				continue
 			for i in mm.instance_count:
 				var t: Transform3D = mm.get_instance_transform(i)
 				var dx: float = t.origin.x - world_pos.x
 				var dz: float = t.origin.z - world_pos.y
-				if sqrt(dx * dx + dz * dz) < radius:
+				if dx * dx + dz * dz < radius * radius:
 					mm.set_instance_transform(i, t.translated(Vector3(0, -50, 0)))
 
 

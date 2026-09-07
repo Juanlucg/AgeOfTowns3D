@@ -1,11 +1,8 @@
 extends RefCounted
 class_name BuildingMeshes
-# Constructores puros de geometria para los edificios del juego.
-# Antes vivian como metodos privados (_mesh_granary, _mesh_farm, ...) dentro
-# de Buildings.gd. Se extraen aqui como funciones estaticas para:
-#   - Testearlos sin instanciar Buildings (que requiere una escena).
-#   - Reutilizarlos (vista previa del fantasma, render de catalogo, etc.).
-#   - Reducir Buildings.gd a solo la logica de colocacion y produccion.
+## Constructores puros de geometria para los edificios del juego
+## (granero, granja, aserradero, cantera). Extraidos de [Buildings]
+## para ser testables y reutilizables (fantasmas, catalogo).
 
 const WOOD_COLOR := Color(0.55, 0.38, 0.20)
 const ROOF_COLOR := Color(0.42, 0.26, 0.13)
