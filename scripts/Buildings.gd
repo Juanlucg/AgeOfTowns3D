@@ -19,7 +19,9 @@ const BuildingRecord := preload("res://scripts/BuildingRecord.gd")
 ## Modulos: [BuildingDef] (datos), [BuildingMeshes] (geometria), [FieldMesh] (campo).
 
 signal building_built(type: StringName, pos: Vector2)
+signal building_demolished(type: StringName, pos: Vector2)
 signal selection_changed(type: StringName)
+signal building_focus_changed(rec: BuildingRecord)  # rec=null si no hay seleccion
 signal message_requested(text: String)
 signal place_clear_requested(pos: Vector2, radius: float)
 
@@ -27,12 +29,14 @@ signal place_clear_requested(pos: Vector2, radius: float)
 
 const GHOST_OK := Color(0.30, 1.0, 0.45, 0.45)
 const GHOST_BAD := Color(1.0, 0.30, 0.30, 0.45)
+const SELECT_COLOR := Color(1.0, 0.85, 0.2, 0.55)
 const FOUNDATION_STEP := 1.0
 const ROTATE_SPEED := 120.0
 const FIELD_MIN := 1.2
 const FIELD_MAX_AREA := 60.0
 const FIELD_RATE := 0.4
 const STONE_COLOR := Color(0.50, 0.50, 0.52)
+const DEMOLISH_REFUND := 0.5   # fraccion del coste que se devuelve
 
 const CROP_COLORS := {
 	"trigo": Color(0.85, 0.70, 0.25),
@@ -65,6 +69,10 @@ var _field_crop := "trigo"
 var _field_ghost: Node3D = null
 var _field_farm: BuildingRecord = null
 var _field_yaw := 0.0
+
+# Edificio actualmente seleccionado (para demolir con Delete). Null = nada.
+var _selected: BuildingRecord = null
+var _selection_marker: MeshInstance3D = null
 
 # --- Herramientas dev ---
 var dev_free_build := false
@@ -158,6 +166,78 @@ func get_ids() -> Array[StringName]:
 
 func is_placing() -> bool:
 	return _pending != &"" or _field_mode
+
+
+func get_selected() -> BuildingRecord:
+	return _selected
+
+
+# Devuelve el BuildingRecord bajo el punto del mundo, o null.
+func building_at(ground: Vector2) -> BuildingRecord:
+	for b in _placed:
+		if b.pos.distance_to(ground) < 1.5:
+			return b
+	return null
+
+
+# Selecciona un edificio. Si ya estaba seleccionado, lo deselecciona.
+func toggle_select(rec: BuildingRecord) -> void:
+	if _selected == rec:
+		deselect()
+		return
+	_selected = rec
+	_update_selection_marker()
+	building_focus_changed.emit(_selected)
+
+
+func deselect() -> void:
+	if _selected == null:
+		return
+	_selected = null
+	_update_selection_marker()
+	building_focus_changed.emit(null)
+
+
+# Demuele el edificio seleccionado. Refund parcial segun DEMOLISH_REFUND.
+func demolish_selected() -> void:
+	if _selected == null:
+		return
+	var rec := _selected
+	var d := get_def(rec.type)
+	if d != null:
+		for k in d.cost:
+			Economy.amounts[k] = Economy.amounts[k] + d.cost[k] * DEMOLISH_REFUND
+		Economy.changed.emit()
+	_deselect()
+	_placed.erase(rec)
+	if rec.node != null and is_instance_valid(rec.node):
+		rec.node.queue_free()
+	building_demolished.emit(rec.type, rec.pos)
+	message_requested.emit("%s demolido (reembolso 50%%)" % d.display_name)
+
+
+func _update_selection_marker() -> void:
+	if _selection_marker != null:
+		_selection_marker.queue_free()
+		_selection_marker = null
+	if _selected == null or _selected.node == null:
+		return
+	# Anillo amarillo translucido a la altura del suelo del edificio
+	var ring := TorusMesh.new()
+	ring.inner_radius = 0.9
+	ring.outer_radius = 1.1
+	var mi := MeshInstance3D.new()
+	mi.mesh = ring
+	var m := StandardMaterial3D.new()
+	m.albedo_color = SELECT_COLOR
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mi.material_override = m
+	mi.rotation = Vector3(deg_to_rad(90.0), 0.0, 0.0)
+	mi.position = Vector3(_selected.pos.x, Terrain.height_at(_selected.pos) + 0.05, _selected.pos.y)
+	add_child(mi)
+	_selection_marker = mi
 
 
 func select(id_str: String) -> void:
@@ -267,8 +347,16 @@ func _unhandled_input(event: InputEvent) -> void:
 			_cancel_field()
 		elif _pending != &"":
 			deselect()
+		else:
+			deselect()
 		get_viewport().set_input_as_handled()
 		return
+	# Demoler: tecla Delete/Backspace con edificio seleccionado.
+	if event is InputEventKey and event.pressed and not event.echo:
+		if (event.keycode == KEY_DELETE or event.keycode == KEY_BACKSPACE) and _selected != null:
+			demolish_selected()
+			get_viewport().set_input_as_handled()
+			return
 	if event is InputEventMouseButton:
 		var btn := event as InputEventMouseButton
 		if _field_mode and btn.pressed:
@@ -285,6 +373,20 @@ func _unhandled_input(event: InputEvent) -> void:
 			elif btn.button_index == MOUSE_BUTTON_LEFT:
 				_place()
 				get_viewport().set_input_as_handled()
+			return
+		# Sin colocar: clic izq = seleccionar edificio bajo el cursor; der = deseleccionar.
+		if btn.pressed and btn.button_index == MOUSE_BUTTON_LEFT:
+			var ground: Vector2 = _cam_rig.screen_to_ground(btn.position)
+			var hit := building_at(ground)
+			if hit != null:
+				toggle_select(hit)
+			else:
+				deselect()
+			get_viewport().set_input_as_handled()
+			return
+		if btn.pressed and btn.button_index == MOUSE_BUTTON_RIGHT and _selected != null:
+			demolish_selected()
+			get_viewport().set_input_as_handled()
 
 
 func _place() -> void:

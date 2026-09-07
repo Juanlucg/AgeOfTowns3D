@@ -1,15 +1,14 @@
 extends CanvasLayer
 class_name BuildMenu
-# Menu de construccion en la parte inferior de la pantalla: un boton por tipo
-# de edificio (nombre, produccion y coste). Se elige con clic o con las teclas
-# 1-4; la colocacion (fantasma, rotacion y validacion) la gestiona Buildings.
+## Menu de construccion en la parte inferior: boton por tipo de edificio
+## (nombre, hint, coste) + tooltip al hover con detalle.
 
 @export var buildings_path: NodePath
 
 # Carga explicita (no depende de la resolucion de class_name por el indice).
 const UIStyle := preload("res://scripts/UIStyle.gd")
+const BuildingTooltip := preload("res://scripts/BuildingTooltip.gd")
 
-# IDs en el orden del menu. El registro real vive en Buildings._defs.
 const TYPE_KEYS: Array[StringName] = [&"granero", &"granja", &"aserradero", &"cantera"]
 
 var _buttons := {}
@@ -17,6 +16,7 @@ var _group := ButtonGroup.new()
 var _buildings: Buildings
 var _hint: Label
 var _syncing := false
+var _tooltip: BuildingTooltip
 
 
 func _ready() -> void:
@@ -57,15 +57,21 @@ func _ready() -> void:
 		b.text = "%s\n%s\n%s" % [d.display_name, d.hint, _cost_text(d.cost)]
 		b.add_theme_font_size_override("font_size", 13)
 		b.pressed.connect(_on_pressed.bind(id))
+		b.mouse_entered.connect(_on_button_hover.bind(id))
+		b.mouse_exited.connect(_on_button_unhover)
 		row.add_child(b)
 		_buttons[id] = b
 
 	_hint = Label.new()
-	_hint.text = "1-4: elegir edificio   |   clic: colocar   |   mantener R: rotar   |   Esc o clic der.: cancelar"
+	_hint.text = "1-4: elegir edificio   |   clic: colocar   |   mantener R: rotar   |   Esc o clic der.: cancelar   |   Delete: demoler seleccionado"
 	_hint.add_theme_font_size_override("font_size", 12)
 	_hint.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
 	_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(_hint)
+
+	_tooltip = BuildingTooltip.new()
+	_tooltip.visible = false
+	add_child(_tooltip)
 
 	Economy.changed.connect(_refresh)
 	_refresh()
@@ -86,6 +92,18 @@ func _on_selection_changed(type: StringName) -> void:
 	for t in TYPE_KEYS:
 		(_buttons[t] as Button).button_pressed = (t == type)
 	_syncing = false
+
+
+func _on_button_hover(id: StringName) -> void:
+	var d := _buildings.get_def(id)
+	if d == null:
+		return
+	var vp := get_viewport().get_visible_rect().size
+	_tooltip.show_for(d, Vector2(vp.x - _tooltip.size.x - 20, 20))
+
+
+func _on_button_unhover() -> void:
+	_tooltip.hide_tooltip()
 
 
 func _refresh() -> void:
