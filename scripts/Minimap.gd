@@ -86,6 +86,13 @@ func _on_building(type: StringName, pos: Vector2) -> void:
 	_buildings_on_map.append({"pos": pos, "color": d.color})
 
 
+func _on_building_demolished(_type: StringName, pos: Vector2) -> void:
+	for i in _buildings_on_map.size() - 1:
+		if _buildings_on_map[i].pos.distance_to(pos) < 0.5:
+			_buildings_on_map.remove_at(i)
+			return
+
+
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var btn := event as InputEventMouseButton

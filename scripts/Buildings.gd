@@ -21,7 +21,11 @@ const BuildingRecord := preload("res://scripts/BuildingRecord.gd")
 signal building_built(type: StringName, pos: Vector2)
 signal building_demolished(type: StringName, pos: Vector2)
 signal selection_changed(type: StringName)
-signal building_focus_changed(rec: BuildingRecord)  # rec=null si no hay seleccion
+## Emitida al cambiar el edificio enfocado (clic izq). `rec` es null si no
+## hay seleccion. `screen_pos` es la posicion del edificio en pantalla (o
+## Vector2.ZERO si se ha deseleccionado). Los consumidores (BuildingInfoMenu)
+## la usan para mostrar/ocultar el menu contextual.
+signal building_focus_changed(rec: BuildingRecord, screen_pos: Vector2)
 signal message_requested(text: String)
 signal place_clear_requested(pos: Vector2, radius: float)
 
@@ -187,7 +191,12 @@ func toggle_select(rec: BuildingRecord) -> void:
 		return
 	_selected = rec
 	_update_selection_marker()
-	building_focus_changed.emit(_selected)
+	var screen := Vector2.ZERO
+	if rec != null and rec.node != null and is_instance_valid(rec.node):
+		# Punto del edificio proyectado al centro de la pantalla, cerca del suelo.
+		var ground3 := Vector3(rec.pos.x, Terrain.height_at(rec.pos), rec.pos.y)
+		screen = _cam_rig.unproject_position(ground3)
+	building_focus_changed.emit(_selected, screen)
 
 
 func deselect() -> void:
@@ -195,25 +204,33 @@ func deselect() -> void:
 		return
 	_selected = null
 	_update_selection_marker()
-	building_focus_changed.emit(null)
+	building_focus_changed.emit(null, Vector2.ZERO)
 
 
 # Demuele el edificio seleccionado. Refund parcial segun DEMOLISH_REFUND.
 func demolish_selected() -> void:
 	if _selected == null:
 		return
-	var rec := _selected
+	demolish(_selected)
+
+
+func demolish(rec: BuildingRecord) -> void:
+	if rec == null:
+		return
 	var d := get_def(rec.type)
 	if d != null:
 		for k in d.cost:
 			Economy.amounts[k] = Economy.amounts[k] + d.cost[k] * DEMOLISH_REFUND
 		Economy.changed.emit()
-	_deselect()
+	# Limpia seleccion si era este edificio (y desactiva el menu).
+	if _selected == rec:
+		deselect()
 	_placed.erase(rec)
 	if rec.node != null and is_instance_valid(rec.node):
 		rec.node.queue_free()
-	building_demolished.emit(rec.type, rec.pos)
-	message_requested.emit("%s demolido (reembolso 50%%)" % d.display_name)
+	if d != null:
+		building_demolished.emit(rec.type, rec.pos)
+		message_requested.emit("%s demolido (reembolso 50%%)" % d.display_name)
 
 
 func _update_selection_marker() -> void:

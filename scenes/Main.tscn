@@ -11,6 +11,7 @@
 [ext_resource type="Script" uid="uid://bwrau7rfak1y3" path="res://scripts/BuildMenu.gd" id="10_menu"]
 [ext_resource type="Script" path="res://scripts/dev/DevTools.gd" id="11_dev"]
 [ext_resource type="Script" path="res://scripts/Main.gd" id="12_main"]
+[ext_resource type="Script" path="res://scripts/BuildingInfoMenu.gd" id="13_info"]
 
 [node name="Main" type="Node3D" unique_id=1696096527]
 script = ExtResource("12_main")
@@ -67,3 +68,8 @@ buildings_path = NodePath("../Buildings")
 script = ExtResource("11_dev")
 day_night_path = NodePath("../DayNightCycle")
 buildings_path = NodePath("../Buildings")
+
+[node name="InfoLayer" type="CanvasLayer" parent="." unique_id=2222222222]
+
+[node name="BuildingInfoMenu" type="PanelContainer" parent="InfoLayer" unique_id=1111111111]
+script = ExtResource("13_info")
