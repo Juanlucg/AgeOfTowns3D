@@ -2,10 +2,6 @@ extends Node3D
 class_name Buildings
 ## Construcciones del pueblo. Gestionan colocacion, validacion, produccion
 ## y registro de edificios colocados.
-
-# Carga explicita (no depende de la resolucion de class_name por el indice
-# en Godot 4.7, que a veces queda stale con scripts recien anadidos).
-const BuildingRecord := preload("res://scripts/BuildingRecord.gd")
 ##
 ## Se eligen desde el menu inferior (o teclas 1-4):
 ## granero (almacen), granja (casita + campo), aserradero, cantera.
