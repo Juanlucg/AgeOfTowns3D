@@ -1,16 +1,20 @@
 extends PanelContainer
 class_name BuildingInfoMenu
-## Popup contextual al hacer clic en un edificio colocado. Inspirado en
-## city-builders: header (icono + nombre), descripcion, capacidad,
-## trabajadores, storage global y barra de acciones (Demoler).
+## Popup contextual al hacer clic en un edificio colocado.
 ##
-## Reconstruccion atomica: un unico VBox `_content` se reemplaza entero
-## cada vez, evitando el solapamiento de paneles que se daba al
-## queue_free() los hijos sueltos.
+## Estructura: CanvasLayer -> [click-catcher fullscreen, este panel].
+## El click-catcher captura todos los clics cuando el menu esta visible y
+## cierra el menu si caen fuera del panel. Asi evitamos que el clic pase
+## al mundo y deseleccione (lo que parecia 'el menu se cierra pero no
+## demole').
+##
+## Layout: header (icono + nombre), descripcion, capacidad, trabajadores,
+## storage global y boton Demoler full-width abajo.
 
 const _BIOME_NAMES := {0: "llanura", 1: "bosque", 2: "montaña"}
 
 var _content: VBoxContainer = null
+var _catcher: ColorRect = null
 var _record: BuildingRecord = null
 var _buildings: Buildings = null
 
@@ -20,6 +24,16 @@ func _ready() -> void:
 	visible = false
 	z_index = 100
 	custom_minimum_size = Vector2(320, 0)
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.10, 0.10, 0.14, 0.95)
+	sb.border_color = Color(0.4, 0.4, 0.45, 1.0)
+	sb.set_border_width_all(1)
+	sb.set_corner_radius_all(6)
+	sb.content_margin_left = 14
+	sb.content_margin_right = 14
+	sb.content_margin_top = 10
+	sb.content_margin_bottom = 10
+	add_theme_stylebox_override("panel", sb)
 
 
 func bind(buildings: Buildings) -> void:
@@ -28,8 +42,20 @@ func bind(buildings: Buildings) -> void:
 
 func show_for(record: BuildingRecord, at: Vector2) -> void:
 	_record = record
-	# Reemplazo atomico: quito el content viejo y meto el nuevo sin
-	# solapamiento (queue_free es diferido, free inmediato).
+	# Click-catcher fullscreen para absorber clics fuera del menu.
+	if _catcher == null:
+		_catcher = ColorRect.new()
+		_catcher.color = Color(0, 0, 0, 0.001)   # casi invisible
+		_catcher.set_anchors_preset(Control.PRESET_FULL_RECT)
+		_catcher.mouse_filter = Control.MOUSE_FILTER_STOP
+		# Anadimos al padre (InfoLayer) detras del menu.
+		get_parent().add_child(_catcher)
+		get_parent().move_child(_catcher, get_index())
+		_catcher.gui_input.connect(_on_catcher_input)
+	_catcher.visible = true
+
+	# Reemplazo atomico del contenido (queue_free es diferido: si no,
+	# los hijos viejos y nuevos se solapan).
 	if _content != null and is_instance_valid(_content):
 		_content.queue_free()
 	_content = VBoxContainer.new()
@@ -57,8 +83,8 @@ func show_for(record: BuildingRecord, at: Vector2) -> void:
 	_build_action_bar(_content)
 
 	visible = true
-	# Espera al layout y posiciona.
 	await get_tree().process_frame
+	# Posicion: a la derecha del edificio, dentro del viewport.
 	var vp := get_viewport_rect().size
 	var pos := at + Vector2(20, -size.y * 0.5)
 	pos.x = clampf(pos.x, 8, maxf(8.0, vp.x - size.x - 8.0))
@@ -69,10 +95,18 @@ func show_for(record: BuildingRecord, at: Vector2) -> void:
 func hide_menu() -> void:
 	_record = null
 	visible = false
+	if _catcher != null and is_instance_valid(_catcher):
+		_catcher.visible = false
 
 
 func has_record() -> bool:
 	return _record != null
+
+
+func _on_catcher_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.pressed \
+			and event.button_index == MOUSE_BUTTON_LEFT:
+		hide_menu()
 
 
 # --- builders internos ---
@@ -99,8 +133,6 @@ func _build_header(parent: VBoxContainer, def: BuildingDef) -> void:
 		sub.add_theme_font_size_override("font_size", 11)
 		sub.add_theme_color_override("font_color", Color(1, 1, 1, 0.65))
 		title_box.add_child(sub)
-	# Sin boton X en el header (cerraba el menu y confundia con Demoler).
-	# El menu se cierra con ESC o haciendo clic fuera.
 
 
 func _build_description(parent: VBoxContainer, text: String) -> void:
@@ -188,43 +220,36 @@ func _build_storage_row(parent: VBoxContainer) -> void:
 
 
 func _build_action_bar(parent: VBoxContainer) -> void:
-	var bar := HBoxContainer.new()
-	bar.add_theme_constant_override("separation", 6)
-	parent.add_child(bar)
-
-	var spacer_l := Control.new()
-	spacer_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	bar.add_child(spacer_l)
-
+	# Boton enorme y full-width: imposible fallar al clicar.
 	var demolish := Button.new()
-	demolish.text = "X Demoler (50% reembolso)"
-	demolish.add_theme_font_size_override("font_size", 12)
+	demolish.text = "X  Demoler (50% reembolso)"
+	demolish.add_theme_font_size_override("font_size", 14)
 	demolish.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	demolish.custom_minimum_size = Vector2(0, 44)
+	demolish.mouse_filter = Control.MOUSE_FILTER_STOP
 	var red := StyleBoxFlat.new()
-	red.bg_color = Color(0.55, 0.18, 0.18, 0.85)
-	red.set_corner_radius_all(4)
-	red.content_margin_left = 10
-	red.content_margin_right = 10
-	red.content_margin_top = 4
-	red.content_margin_bottom = 4
+	red.bg_color = Color(0.55, 0.18, 0.18, 1.0)
+	red.set_corner_radius_all(6)
+	red.content_margin_left = 14
+	red.content_margin_right = 14
+	red.content_margin_top = 10
+	red.content_margin_bottom = 10
 	demolish.add_theme_stylebox_override("normal", red)
+	var red_hover := red.duplicate()
+	red_hover.bg_color = Color(0.7, 0.22, 0.22, 1.0)
+	demolish.add_theme_stylebox_override("hover", red_hover)
 	demolish.pressed.connect(_on_demolish_pressed)
-	bar.add_child(demolish)
-
-	var spacer_r := Control.new()
-	spacer_r.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	bar.add_child(spacer_r)
+	parent.add_child(demolish)
 
 
 func _on_demolish_pressed() -> void:
-	print("[BuildingInfoMenu] _on_demolish_pressed: record=", _record, " buildings=", _buildings)
+	print("[BuildingInfoMenu] _on_demolish_pressed: record=", _record)
 	if _record == null or _buildings == null:
-		print("[BuildingInfoMenu] abort: null check failed")
 		return
 	var rec := _record
 	hide_menu()
 	_buildings.demolish(rec)
-	print("[BuildingInfoMenu] demolish called for ", rec)
+	print("[BuildingInfoMenu] demolish llamado para ", rec)
 
 
 func _fmt(n: float) -> String:
