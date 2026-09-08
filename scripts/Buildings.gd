@@ -485,7 +485,9 @@ func _confirm_field() -> void:
 		return
 	var crop_color: Color = CROP_COLORS[_field_crop]
 	var field := FieldMesh.build(rmin, rmax, crop_color, false)
-	add_child(field)
+	# El campo es hijo de la casita: al demoler la granja con queue_free(),
+	# el campo se libera automaticamente con ella.
+	_field_farm.node.add_child(field)
 	var center := Vector2((rmin.x + rmax.x) * 0.5, (rmin.y + rmax.y) * 0.5)
 	var field_radius := maxf(w, d) + 1.5
 	place_clear_requested.emit(center, field_radius)
