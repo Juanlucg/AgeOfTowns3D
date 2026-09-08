@@ -372,7 +372,8 @@ func _process(delta: float) -> void:
 	var d := get_def(_pending)
 	var base_h := _base_height(ground, d.footprint)
 	_ghost.position = Vector3(ground.x, base_h, ground.y)
-	_ghost.rotation = Vector3(0.0, deg_to_rad(_yaw), 0.0)
+	# Solo gira el cuerpo: la cimentacion se muestrea alineada con el mundo.
+	_ghost_building.rotation = Vector3(0.0, deg_to_rad(_yaw), 0.0)
 	for c in _ghost_foundation.get_children():
 		_ghost_foundation.remove_child(c)
 		c.queue_free()
@@ -498,9 +499,13 @@ func _place() -> void:
 		Economy.granary_count += 1
 		Economy.changed.emit()
 	var base_h := _base_height(ground, d.footprint)
-	var node := BuildingMeshes.build(String(_pending), null)
-	node.rotation = Vector3(0.0, deg_to_rad(_yaw), 0.0)
+	# Raiz sin rotar apoyada en el punto de apoyo: el cuerpo gira con el yaw,
+	# la cimentacion no (sus pilares siguen la rejilla del terreno).
+	var node := Node3D.new()
 	node.position = Vector3(ground.x, base_h, ground.y)
+	var body := BuildingMeshes.build(_pending, null)
+	body.rotation = Vector3(0.0, deg_to_rad(_yaw), 0.0)
+	node.add_child(body)
 	node.add_child(_make_foundation(ground, d.footprint, base_h, null))
 	add_child(node)
 	var rec := BuildingRecord.new(_pending, ground, _yaw, node, dev_free_build)
@@ -682,6 +687,16 @@ func _base_height(pos: Vector2, footprint: float) -> float:
 
 # Losa de piedra bajo el edificio y, donde el terreno baja, pilares/pared de
 # piedras que rellenan hasta el suelo real.
+#
+# IMPORTANTE: devuelve geometria en espacio LOCAL, relativa al origen del
+# edificio (pos.x, base_h, pos.y). `pos` y `base_h` solo se usan para muestrear
+# el terreno, nunca para posicionar. Antes se devolvian coordenadas absolutas
+# y el nodo se colgaba de un padre ya trasladado a esa misma posicion, asi que
+# la cimentacion acababa dibujada al doble de coordenadas (un edificio en
+# 150,150 plantaba su losa en 300,300).
+#
+# El nodo devuelto NO debe rotarse con el edificio: los pilares se muestrean
+# en una rejilla alineada con los ejes del mundo.
 func _make_foundation(pos: Vector2, footprint: float, base_h: float, mat: Material) -> Node3D:
 	var n := Node3D.new()
 	var stone := mat if mat != null else BuildingMeshes._mat(STONE_COLOR)
@@ -690,7 +705,7 @@ func _make_foundation(pos: Vector2, footprint: float, base_h: float, mat: Materi
 	sm.size = Vector3(footprint + 0.5, 0.3, footprint + 0.5)
 	slab.mesh = sm
 	slab.material_override = stone
-	slab.position = Vector3(pos.x, base_h - 0.15, pos.y)
+	slab.position = Vector3(0.0, -0.15, 0.0)
 	n.add_child(slab)
 	var step := 0.5
 	var half := footprint * 0.5 + 0.25
@@ -706,7 +721,7 @@ func _make_foundation(pos: Vector2, footprint: float, base_h: float, mat: Materi
 				cm.size = Vector3(step * 1.05, dh, step * 1.05)
 				col.mesh = cm
 				col.material_override = stone
-				col.position = Vector3(pos.x + x, h + dh * 0.5 + 0.05, pos.y + y)
+				col.position = Vector3(x, h - base_h + dh * 0.5 + 0.05, y)
 				n.add_child(col)
 			x += step
 		y += step

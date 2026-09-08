@@ -12,12 +12,15 @@ const SOIL_COLOR := Color(0.40, 0.28, 0.14)
 
 
 # `mat` es el material a aplicar; si es null, se usa el color solido del tipo.
-static func build(type: String, mat: Material) -> Node3D:
+# El tipo es el mismo StringName que usa [BuildingDef.id] (antes esta funcion
+# recibia String y los dos llamantes pasaban tipos distintos).
+static func build(type: StringName, mat: Material) -> Node3D:
 	match type:
-		"granero": return granary(mat)
-		"granja": return farm(mat)
-		"aserradero": return sawmill(mat)
-		"cantera": return quarry(mat)
+		&"granero": return granary(mat)
+		&"granja": return farm(mat)
+		&"aserradero": return sawmill(mat)
+		&"cantera": return quarry(mat)
+	push_warning("BuildingMeshes.build: tipo desconocido '%s'" % type)
 	return Node3D.new()
 
 
