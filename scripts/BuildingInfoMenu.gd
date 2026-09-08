@@ -46,7 +46,10 @@ func show_for(record: BuildingRecord, at: Vector2) -> void:
 		_add_row(vbox, "Produce", "+%s %s cada %ss" % [_fmt(def.prod_amount), String(def.prod_resource), _fmt(def.prod_interval)])
 	if record.crop != "":
 		_add_row(vbox, "Cultivo", record.crop.capitalize())
-	_add_row(vbox, "Biomas", ", ".join([_BIOME_NAMES.get(b, str(b)) for b in def.biomes]))
+	var biomes_parts: Array = []
+	for b in def.biomes:
+		biomes_parts.append(_BIOME_NAMES.get(b, str(b)))
+	_add_row(vbox, "Biomas", ", ".join(biomes_parts))
 
 	var button_row := HBoxContainer.new()
 	button_row.add_theme_constant_override("separation", 6)

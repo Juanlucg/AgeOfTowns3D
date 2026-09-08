@@ -195,7 +195,7 @@ func toggle_select(rec: BuildingRecord) -> void:
 	if rec != null and rec.node != null and is_instance_valid(rec.node):
 		# Punto del edificio proyectado al centro de la pantalla, cerca del suelo.
 		var ground3 := Vector3(rec.pos.x, Terrain.height_at(rec.pos), rec.pos.y)
-		screen = _cam_rig.unproject_position(ground3)
+		screen = _cam_rig.world_to_screen(ground3)
 	building_focus_changed.emit(_selected, screen)
 
 
@@ -264,9 +264,9 @@ func select(id_str: String) -> void:
 	if not _defs.has(id):
 		return
 	if _pending == id:
-		deselect()
+		cancel_placement()
 		return
-	deselect()
+	cancel_placement()
 	_pending = id
 	_yaw = 0.0
 	_ghost = Node3D.new()
@@ -278,7 +278,7 @@ func select(id_str: String) -> void:
 	selection_changed.emit(id)
 
 
-func deselect() -> void:
+func cancel_placement() -> void:
 	_pending = &""
 	if _ghost != null:
 		_ghost.queue_free()

@@ -22,7 +22,10 @@ func show_for(def: BuildingDef, at: Vector2) -> void:
 		_add_row(vbox, "Produce", "+%s %s cada %ss" % [amt, String(def.prod_resource), _format_amount(def.prod_interval)])
 	if def.hint != "":
 		_add_row(vbox, "", def.hint)
-	var biomes_str := ", ".join([_BIOME_NAMES.get(b, str(b)) for b in def.biomes])
+	var biomes_parts: Array = []
+	for b in def.biomes:
+		biomes_parts.append(_BIOME_NAMES.get(b, str(b)))
+	var biomes_str := ", ".join(biomes_parts)
 	_add_row(vbox, "Biomas", biomes_str)
 	position = at
 	visible = true

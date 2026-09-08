@@ -169,6 +169,14 @@ func move_to(ground: Vector2) -> void:
 	_position_target = Vector3(ground.x, 0.0, ground.y)
 
 
+# Proyecta un punto del mundo a coordenadas de pantalla.
+# Util para anclar UI 3D-to-2D (e.g. menu contextual sobre un edificio).
+func world_to_screen(world_pos: Vector3) -> Vector2:
+	if _cam == null:
+		return Vector2.ZERO
+	return _cam.unproject_position(world_pos)
+
+
 func _march(origin: Vector3, ray: Vector3) -> Vector3:
 	var above := origin.y > _height_at(origin)
 	var t := 0.0
