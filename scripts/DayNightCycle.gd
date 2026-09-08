@@ -216,6 +216,7 @@ var _rain_splash: GPUParticles3D
 @onready var _veg: Vegetation = get_parent().get_node_or_null("Vegetation") as Vegetation
 @onready var _cam_rig: CameraController3D = get_parent().get_node_or_null("CameraRig") as CameraController3D
 @onready var _terrain_mat: ShaderMaterial = _ground.terrain_material if _ground != null else null
+@onready var _sea: OpenSea = get_parent().get_node_or_null("OpenSea") as OpenSea
 
 # --- Herramientas dev ---
 var dev_paused := false
@@ -711,6 +712,10 @@ func _update_ground_weather(delta: float) -> void:
 		_terrain_mat.set_shader_parameter("u_snow_cover", _snow_cover)
 		_terrain_mat.set_shader_parameter("u_wet", _wet_amount)
 		_terrain_mat.set_shader_parameter("u_rain_ripple", _rain_ripple)
+	# El mar abierto usa el mismo parametro, para que la lluvia no se pare de
+	# golpe en el borde del mapa.
+	if _sea != null and _sea.sea_material != null:
+		_sea.sea_material.set_shader_parameter("u_rain_ripple", _rain_ripple)
 	# Niebla extra con lluvia/nieve para cortina lejana
 	if _env != null:
 		var base_fog := _sfloat(FOG_DENSITY_BY_SEASON, get_season_progress())

@@ -12,6 +12,7 @@
 [ext_resource type="Script" path="res://scripts/dev/DevTools.gd" id="11_dev"]
 [ext_resource type="Script" path="res://scripts/Main.gd" id="12_main"]
 [ext_resource type="Script" path="res://scripts/BuildingInfoMenu.gd" id="13_info"]
+[ext_resource type="Script" path="res://scripts/OpenSea.gd" id="14_sea"]
 
 [node name="Main" type="Node3D" unique_id=1696096527]
 script = ExtResource("12_main")
@@ -23,12 +24,17 @@ shadow_enabled = true
 [node name="Ground" type="MeshInstance3D" parent="." unique_id=1678041047]
 script = ExtResource("1_mesh")
 
+[node name="OpenSea" type="MeshInstance3D" parent="."]
+script = ExtResource("14_sea")
+
 [node name="CameraRig" type="Node3D" parent="." unique_id=543882290]
 script = ExtResource("2_cam")
 
 [node name="Camera3D" type="Camera3D" parent="CameraRig" unique_id=373425901]
 current = true
 fov = 45.0
+near = 0.5
+far = 5000.0
 
 [node name="DayNightCycle" type="Node3D" parent="." unique_id=1664011204]
 script = ExtResource("3_day")
