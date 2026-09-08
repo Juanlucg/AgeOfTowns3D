@@ -243,13 +243,14 @@ func _build_action_bar(parent: VBoxContainer) -> void:
 
 
 func _on_demolish_pressed() -> void:
-	print("[BuildingInfoMenu] _on_demolish_pressed: record=", _record)
+	print("[INFO] _on_demolish_pressed ENTER record=", _record)
 	if _record == null or _buildings == null:
+		print("[INFO] abort: null check failed")
 		return
 	var rec := _record
 	hide_menu()
 	_buildings.demolish(rec)
-	print("[BuildingInfoMenu] demolish llamado para ", rec)
+	print("[INFO] demolish llamado OK")
 
 
 func _fmt(n: float) -> String:

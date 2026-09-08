@@ -214,6 +214,8 @@ func toggle_select(rec: BuildingRecord) -> void:
 		deselect()
 		return
 	_selected = rec
+	# Orienta el edificio para que su cara (puerta) mire a la camara.
+	_face_camera(rec)
 	_update_selection_marker()
 	var screen := Vector2.ZERO
 	if rec != null and rec.node != null and is_instance_valid(rec.node):
@@ -221,6 +223,22 @@ func toggle_select(rec: BuildingRecord) -> void:
 		var ground3 := Vector3(rec.pos.x, Terrain.height_at(rec.pos), rec.pos.y)
 		screen = _cam_rig.world_to_screen(ground3)
 	building_focus_changed.emit(_selected, screen)
+
+
+# Rota el edificio para que su +Z local (donde esta la puerta) apunte
+# hacia la camara. Asi el jugador ve la fachada al clicar.
+func _face_camera(rec: BuildingRecord) -> void:
+	if rec == null or rec.node == null or _cam_rig == null:
+		return
+	var build_pos := Vector3(rec.pos.x, 0, rec.pos.y)
+	var cam_pos := _cam_rig.global_position
+	var dir := cam_pos - build_pos
+	if dir.length_squared() < 0.0001:
+		return
+	dir.y = 0
+	dir = dir.normalized()
+	rec.yaw = atan2(dir.x, dir.z)
+	rec.node.rotation = Vector3(0.0, rec.yaw, 0.0)
 
 
 func deselect() -> void:
@@ -239,10 +257,13 @@ func demolish_selected() -> void:
 
 
 func demolish(rec: BuildingRecord) -> void:
+	print("[BUILDINGS] demolish ENTER rec=", rec, " type=", rec.type if rec != null else "null")
 	if rec == null:
+		print("[BUILDINGS] abort: rec is null")
 		return
 	# Reembolso antes de cualquier cleanup para que el HUD lo vea.
 	var d := get_def(rec.type)
+	print("[BUILDINGS] def=", d)
 	if d != null:
 		for k in d.cost:
 			Economy.amounts[k] = Economy.amounts[k] + d.cost[k] * DEMOLISH_REFUND
@@ -254,6 +275,7 @@ func demolish(rec: BuildingRecord) -> void:
 	# demas consultas ya no lo vean.
 	_placed.erase(rec)
 	# Libera los nodos visuales (casita y, si es granja, el campo).
+	print("[BUILDINGS] node=", rec.node, " is_valid=", is_instance_valid(rec.node) if rec.node != null else false)
 	if rec.node != null and is_instance_valid(rec.node):
 		rec.node.queue_free()
 	if rec.field != null and is_instance_valid(rec.field):
@@ -262,6 +284,7 @@ func demolish(rec: BuildingRecord) -> void:
 	if d != null:
 		building_demolished.emit(rec.type, rec.pos)
 		message_requested.emit("%s demolido (reembolso 50%%)" % d.display_name)
+	print("[BUILDINGS] demolish DONE")
 
 
 func _update_selection_marker() -> void:
