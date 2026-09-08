@@ -36,7 +36,11 @@ var _msg_timer: Timer
 
 func _ready() -> void:
 	_day = get_node_or_null(day_night_path) as DayNightCycle
-	assert(_day != null, "HUD: day_night_path no asignado en el .tscn")
+	if _day == null:
+		# assert() desaparece en las builds de release: alli esto reventaba
+		# con un null deref sin decir por que.
+		push_error("HUD: day_night_path no apunta a un DayNightCycle en el .tscn")
+		return
 	_day.time_changed.connect(_on_time_changed)
 	layer = 10
 

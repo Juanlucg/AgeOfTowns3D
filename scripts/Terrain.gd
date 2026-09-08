@@ -422,7 +422,7 @@ func _generate() -> void:
 			if heights[idx] < lake_wl:
 				_wl_px[idx] = lake_wl
 				_lake_px[idx] = 1
-	print("[Terrain] rio: fuente=%s boca=%s (lado opuesto)" % [src, mouth])
+	print_verbose("[Terrain] rio: fuente=%s boca=%s (lado opuesto)" % [src, mouth])
 
 	# --- Lago de montaña: un solo lago, de tamano medio, con orilla irregular
 	# (ruido) y elevado entre las sierras, en correlacion con sus alturas ---
@@ -628,7 +628,7 @@ func _generate() -> void:
 			_wl_px[i] = 0.0
 			filled += 1
 	_height_px = heights
-	print("[Terrain] lagos_rellenados=%d" % filled)
+	print_verbose("[Terrain] lagos_rellenados=%d" % filled)
 
 	# --- Biomas ---
 	var water_mask := PackedByteArray()
@@ -662,7 +662,7 @@ func _generate() -> void:
 	var counts := [0, 0, 0, 0, 0, 0]
 	for i in range(n):
 		counts[_class_px[i]] += 1
-	print("[Terrain] %dx%d px/unidad=%.2f | agua=%d playa=%d llanura=%d bosque=%d montaña=%d nieve=%d"
+	print_verbose("[Terrain] %dx%d px/unidad=%.2f | agua=%d playa=%d llanura=%d bosque=%d montaña=%d nieve=%d"
 		% [_width, _height, _px_per_unit, counts[0], counts[1], counts[2], counts[3], counts[4], counts[5]])
 
 

@@ -1,4 +1,4 @@
-extends Node3D
+extends ScatterLayer
 class_name Rocks
 # Rocas: cantos de bajo poligono instanciados con MultiMesh. Forma de boulder
 # (icosaedro subdividido, con los vertices desplazados radialmente y aplastado
@@ -19,47 +19,19 @@ const ROCK_COLOR_CRAG := Color(0.47, 0.45, 0.43)
 const ROCK_COLOR_SLAB := Color(0.55, 0.53, 0.49)
 
 
-func _ready() -> void:
-	# Misma estrategia que Vegetation: el bucle 230x230 con lookups de bioma
-	# se ejecuta en un hilo y los transforms se aplican al MultiMesh en el
-	# hilo principal via call_deferred (MultiMesh no es thread-safe).
-	_meshes[0] = _build_rock(_mesh_rng(201), 0.7, ROCK_COLOR)
-	_meshes[1] = _build_rock(_mesh_rng(202), 1.0, ROCK_COLOR_CRAG)
-	_meshes[2] = _build_rock(_mesh_rng(203), 0.45, ROCK_COLOR_SLAB)
-	_mmis[0] = _create_empty_mmi(_meshes[0])
-	_mmis[1] = _create_empty_mmi(_meshes[1])
-	_mmis[2] = _create_empty_mmi(_meshes[2])
-	_task_id = WorkerThreadPool.add_task(_populate)
-
-
-# Id de la tarea del WorkerThreadPool. Antes no se guardaba y nadie la
-# esperaba: si se salia del juego mientras generaba, el hilo seguia
-# tocando este nodo mientras Godot lo destruia.
-var _task_id := -1
-
-
-func _exit_tree() -> void:
-	if _task_id != -1:
-		WorkerThreadPool.wait_for_task_completion(_task_id)
-		_task_id = -1
-
-
-var _meshes: Array = [null, null, null]
-var _mmis: Array = [null, null, null]
+# Resultados que calcula el hilo, por variante. El resto de la maquinaria
+# (MultiMeshInstance3D, hilo, clear_near) vive en ScatterLayer.
 var _boulder_result: Array[Transform3D] = []
 var _crag_result: Array[Transform3D] = []
 var _slab_result: Array[Transform3D] = []
 
 
-func _create_empty_mmi(mesh: ArrayMesh) -> MultiMeshInstance3D:
-	var mm := MultiMesh.new()
-	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.mesh = mesh
-	mm.instance_count = 0
-	var mmi := MultiMeshInstance3D.new()
-	mmi.multimesh = mm
-	add_child(mmi)
-	return mmi
+func _ready() -> void:
+	_start_scatter([
+		_build_rock(_mesh_rng(201), 0.7, ROCK_COLOR),
+		_build_rock(_mesh_rng(202), 1.0, ROCK_COLOR_CRAG),
+		_build_rock(_mesh_rng(203), 0.45, ROCK_COLOR_SLAB),
+	])
 
 
 func _populate() -> void:
@@ -118,38 +90,10 @@ func _apply_populated() -> void:
 	_assign_transforms(_mmis[2], _slab_result)
 
 
-func _assign_transforms(mmi: MultiMeshInstance3D, transforms: Array[Transform3D]) -> void:
-	if mmi == null or transforms.is_empty():
-		return
-	var mm := mmi.multimesh
-	mm.instance_count = transforms.size()
-	for i in transforms.size():
-		mm.set_instance_transform(i, transforms[i])
-
-
-func _mesh_rng(seed: int) -> RandomNumberGenerator:
+func _mesh_rng(rng_seed: int) -> RandomNumberGenerator:
 	var rng := RandomNumberGenerator.new()
-	rng.seed = seed
+	rng.seed = rng_seed
 	return rng
-
-
-func clear_near(world_pos: Vector2, radius: float) -> void:
-	# AABB pre-filtro: si la MultiMesh no toca la caja del radio, nada que limpiar.
-	var query_box := AABB(
-		Vector3(world_pos.x - radius, -1000.0, world_pos.y - radius),
-		Vector3(radius * 2.0, 2000.0, radius * 2.0),
-	)
-	for c in get_children():
-		if c is MultiMeshInstance3D:
-			var mm: MultiMesh = c.multimesh
-			if not mm.get_aabb().intersects(query_box):
-				continue
-			for i in mm.instance_count:
-				var t: Transform3D = mm.get_instance_transform(i)
-				var dx: float = t.origin.x - world_pos.x
-				var dz: float = t.origin.z - world_pos.y
-				if dx * dx + dz * dz < radius * radius:
-					mm.set_instance_transform(i, t.translated(Vector3(0, -50, 0)))
 
 
 func _material() -> StandardMaterial3D:

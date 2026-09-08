@@ -21,7 +21,9 @@ var _tooltip: BuildingTooltip
 
 func _ready() -> void:
 	_buildings = get_node_or_null(buildings_path) as Buildings
-	assert(_buildings != null, "BuildMenu: buildings_path no asignado en el .tscn")
+	if _buildings == null:
+		push_error("BuildMenu: buildings_path no apunta a un Buildings en el .tscn")
+		return
 	layer = 10
 	_buildings.selection_changed.connect(_on_selection_changed)
 
@@ -54,7 +56,7 @@ func _ready() -> void:
 		b.toggle_mode = true
 		b.button_group = _group
 		b.custom_minimum_size = Vector2(170, 74)
-		b.text = "%s\n%s\n%s" % [d.display_name, d.hint, _cost_text(d.cost)]
+		b.text = "%s\n%s\ncosto: %s" % [d.display_name, d.hint, d.cost_text()]
 		b.add_theme_font_size_override("font_size", 13)
 		b.pressed.connect(_on_pressed.bind(id))
 		b.mouse_entered.connect(_on_button_hover.bind(id))
@@ -125,9 +127,3 @@ func _unhandled_input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			return
 
-
-func _cost_text(cost: Dictionary) -> String:
-	var parts := []
-	for k in cost:
-		parts.append("%d %s" % [int(cost[k]), k])
-	return "costo: " + ", ".join(parts)

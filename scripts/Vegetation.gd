@@ -1,4 +1,4 @@
-extends Node3D
+extends ScatterLayer
 class_name Vegetation
 # Vegetacion: arboles 3D de bajo poligono instanciados con MultiMesh sobre los
 # biomas del terreno (bosque denso, llanura escasa) y arbustos de matorral en
@@ -45,55 +45,21 @@ var _round_mat: ShaderMaterial
 var _bush_mat: ShaderMaterial
 
 
-func _ready() -> void:
-	# Construccion en hilo: 230x230 = 53k iteraciones (ruido + lookup de bioma
-	# + RNG). En el hilo principal era un freeze de varios segundos al arrancar.
-	# Se delega al WorkerThreadPool y cuando termina se aplican los resultados
-	# en el hilo principal via call_deferred (MultiMesh no es thread-safe).
-	_meshes[0] = _build_pine()
-	_meshes[1] = _build_round()
-	_meshes[2] = _build_bush()
-	_mmis[0] = _create_empty_mmi(_meshes[0])
-	_mmis[1] = _create_empty_mmi(_meshes[1])
-	_mmis[2] = _create_empty_mmi(_meshes[2])
-	_task_id = WorkerThreadPool.add_task(_populate)
-
-
-# Id de la tarea del WorkerThreadPool. Antes no se guardaba y nadie la
-# esperaba: si se salia del juego mientras generaba, el hilo seguia
-# tocando este nodo mientras Godot lo destruia.
-var _task_id := -1
-
-
-func _exit_tree() -> void:
-	if _task_id != -1:
-		WorkerThreadPool.wait_for_task_completion(_task_id)
-		_task_id = -1
-
-
-# Referencias para poblar desde el hilo via deferred call.
-var _meshes: Array = [null, null, null]   # [pine, round, bush]
-var _mmis: Array = [null, null, null]
+# Resultados que calcula el hilo, por variante. El resto de la maquinaria
+# (MultiMeshInstance3D, hilo, clear_near) vive en ScatterLayer.
 var _pine_result: Array[Transform3D] = []
 var _round_result: Array[Transform3D] = []
 var _bush_result: Array[Transform3D] = []
 
 
-func _create_empty_mmi(mesh: ArrayMesh) -> MultiMeshInstance3D:
-	var mm := MultiMesh.new()
-	mm.transform_format = MultiMesh.TRANSFORM_3D
-	mm.mesh = mesh
-	mm.instance_count = 0
-	var mmi := MultiMeshInstance3D.new()
-	mmi.multimesh = mm
-	add_child(mmi)
-	return mmi
+func _ready() -> void:
+	_start_scatter([_build_pine(), _build_round(), _build_bush()])
 
 
 # Corre en el hilo: solo lee Terrain (constantes) y un RNG local.
 func _populate() -> void:
 	var pine: Array[Transform3D] = []
-	var round: Array[Transform3D] = []
+	var round_trees: Array[Transform3D] = []
 	var bush: Array[Transform3D] = []
 	var rng := RandomNumberGenerator.new()
 	rng.seed = Terrain.SEED + 10
@@ -126,11 +92,11 @@ func _populate() -> void:
 					if is_pine:
 						pine.append(t)
 					else:
-						round.append(t)
+						round_trees.append(t)
 			y += STEP
 		x += STEP
 	_pine_result = pine
-	_round_result = round
+	_round_result = round_trees
 	_bush_result = bush
 	call_deferred("_apply_populated")
 
@@ -139,15 +105,6 @@ func _apply_populated() -> void:
 	_assign_transforms(_mmis[0], _pine_result)
 	_assign_transforms(_mmis[1], _round_result)
 	_assign_transforms(_mmis[2], _bush_result)
-
-
-func _assign_transforms(mmi: MultiMeshInstance3D, transforms: Array[Transform3D]) -> void:
-	if mmi == null or transforms.is_empty():
-		return
-	var mm := mmi.multimesh
-	mm.instance_count = transforms.size()
-	for i in transforms.size():
-		mm.set_instance_transform(i, transforms[i])
 
 
 # True si la posicion final es valida para plantar: bosque o llanura, con una
@@ -196,27 +153,6 @@ func apply_season(season: int, k: float) -> void:
 	_pine_mat.set_shader_parameter("u_tint", _tint(LEAF_TINT_PINE, season, k))
 	_round_mat.set_shader_parameter("u_tint", _tint(LEAF_TINT_ROUND, season, k))
 	_bush_mat.set_shader_parameter("u_tint", _tint(LEAF_TINT_BUSH, season, k))
-
-
-func clear_near(world_pos: Vector2, radius: float) -> void:
-	# Caja cuadrada que circunscribe el circulo de radio dado: si el AABB de
-	# la MultiMesh no la toca, no hay nada que comprobar (O(1) en lugar de O(N)
-	# para los casos tipicos: el mundo mide 300x300 y cada clear es ~5m).
-	var query_box := AABB(
-		Vector3(world_pos.x - radius, -1000.0, world_pos.y - radius),
-		Vector3(radius * 2.0, 2000.0, radius * 2.0),
-	)
-	for c in get_children():
-		if c is MultiMeshInstance3D:
-			var mm: MultiMesh = c.multimesh
-			if not mm.get_aabb().intersects(query_box):
-				continue
-			for i in mm.instance_count:
-				var t: Transform3D = mm.get_instance_transform(i)
-				var dx: float = t.origin.x - world_pos.x
-				var dz: float = t.origin.z - world_pos.y
-				if dx * dx + dz * dz < radius * radius:
-					mm.set_instance_transform(i, t.translated(Vector3(0, -50, 0)))
 
 
 func _tint(values: Array, season: int, k: float) -> Vector3:

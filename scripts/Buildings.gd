@@ -86,7 +86,10 @@ var _ghost_last_valid := false
 
 func _ready() -> void:
 	_cam_rig = get_node_or_null(camera_path) as CameraController3D
-	assert(_cam_rig != null, "Buildings: camera_path no asignado en el .tscn")
+	if _cam_rig == null:
+		push_error("Buildings: camera_path no apunta a un CameraController3D en el .tscn")
+		set_process(false)
+		return
 	# Dos materiales para toda la partida: antes se creaba un
 	# StandardMaterial3D nuevo en cada frame de colocacion.
 	_ghost_mat_ok = BuildingMeshes.ghost_mat(GHOST_OK)
@@ -538,24 +541,27 @@ func _place() -> void:
 	cancel_placement()
 
 
-func _confirm_field() -> void:
-	var ground: Vector2 = _cam_rig.screen_to_ground(get_viewport().get_mouse_position())
+# Rectangulo del campo que se esta delimitando: desde la casita (_field_start)
+# hasta donde apunta el raton, en los ejes de la granja. Lo usaban por igual
+# _confirm_field() y _update_field_ghost() con las mismas 17 lineas copiadas.
+func _field_rect(ground: Vector2) -> Rect2:
 	var back := Vector2(-sin(deg_to_rad(_field_yaw)), -cos(deg_to_rad(_field_yaw)))
 	var side := Vector2(back.y, -back.x)
 	var diff := ground - _field_start
-	var depth := maxf(0.0, diff.dot(back))
+	var depth := maxf(FIELD_MIN, maxf(0.0, diff.dot(back)))
 	var spread := diff.dot(side)
-	depth = maxf(depth, FIELD_MIN)
-	var rmin := _field_start + back * 0.0 + side * minf(spread, 0.0)
-	var rmax := _field_start + back * depth + side * maxf(spread, 0.0)
-	if rmin.x > rmax.x:
-		var tmp := rmin.x
-		rmin.x = rmax.x
-		rmax.x = tmp
-	if rmin.y > rmax.y:
-		var tmp := rmin.y
-		rmin.y = rmax.y
-		rmax.y = tmp
+	var a := _field_start + side * minf(spread, 0.0)
+	var b := _field_start + back * depth + side * maxf(spread, 0.0)
+	var rmin := Vector2(minf(a.x, b.x), minf(a.y, b.y))
+	var rmax := Vector2(maxf(a.x, b.x), maxf(a.y, b.y))
+	return Rect2(rmin, rmax - rmin)
+
+
+func _confirm_field() -> void:
+	var ground: Vector2 = _cam_rig.screen_to_ground(get_viewport().get_mouse_position())
+	var rect := _field_rect(ground)
+	var rmin := rect.position
+	var rmax := rect.end
 	var w := rmax.x - rmin.x
 	var d := rmax.y - rmin.y
 	if w < FIELD_MIN or d < FIELD_MIN:
@@ -619,22 +625,9 @@ func _update_field_ghost() -> void:
 	if _field_ghost == null:
 		return
 	var ground: Vector2 = _cam_rig.screen_to_ground(get_viewport().get_mouse_position())
-	var back := Vector2(-sin(deg_to_rad(_field_yaw)), -cos(deg_to_rad(_field_yaw)))
-	var side := Vector2(back.y, -back.x)
-	var diff := ground - _field_start
-	var depth := maxf(0.0, diff.dot(back))
-	var spread := diff.dot(side)
-	depth = maxf(depth, FIELD_MIN)
-	var rmin := _field_start + back * 0.0 + side * minf(spread, 0.0)
-	var rmax := _field_start + back * depth + side * maxf(spread, 0.0)
-	if rmin.x > rmax.x:
-		var tmp := rmin.x
-		rmin.x = rmax.x
-		rmax.x = tmp
-	if rmin.y > rmax.y:
-		var tmp := rmin.y
-		rmin.y = rmax.y
-		rmax.y = tmp
+	var rect := _field_rect(ground)
+	var rmin := rect.position
+	var rmax := rect.end
 	for c in _field_ghost.get_children():
 		_field_ghost.remove_child(c)
 		c.queue_free()
