@@ -33,11 +33,6 @@ func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_PASS
 
 
-func _process(_delta: float) -> void:
-	# Redibujar edificios nuevos; el frustum se redibuja por la senal.
-	queue_redraw()
-
-
 func _minimap_rect() -> Rect2:
 	return Rect2(Vector2(size.x - SIZE - MARGIN, size.y - SIZE - MARGIN), Vector2(SIZE, SIZE))
 
@@ -84,6 +79,7 @@ func _draw() -> void:
 func _on_building(type: StringName, pos: Vector2) -> void:
 	var d := _buildings.get_def(type)
 	_buildings_on_map.append({"pos": pos, "color": d.color})
+	queue_redraw()
 
 
 func _on_building_demolished(_type: StringName, pos: Vector2) -> void:

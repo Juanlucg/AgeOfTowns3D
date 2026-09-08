@@ -77,10 +77,20 @@ var _selection_marker: MeshInstance3D = null
 # --- Herramientas dev ---
 var dev_free_build := false
 
+# Estado del fantasma, para no reconstruirlo cuando nada ha cambiado.
+var _ghost_mat_ok: StandardMaterial3D
+var _ghost_mat_bad: StandardMaterial3D
+var _ghost_last_ground := Vector2(INF, INF)
+var _ghost_last_valid := false
+
 
 func _ready() -> void:
 	_cam_rig = get_node_or_null(camera_path) as CameraController3D
 	assert(_cam_rig != null, "Buildings: camera_path no asignado en el .tscn")
+	# Dos materiales para toda la partida: antes se creaba un
+	# StandardMaterial3D nuevo en cada frame de colocacion.
+	_ghost_mat_ok = BuildingMeshes.ghost_mat(GHOST_OK)
+	_ghost_mat_bad = BuildingMeshes.ghost_mat(GHOST_BAD)
 	_register_defs()
 
 
@@ -335,9 +345,12 @@ func select(id_str: String) -> void:
 		if cam_pos.length_squared() > 0.0001:
 			var dir := Vector3(cam_pos.x, 0, cam_pos.z).normalized()
 			_yaw = atan2(dir.x, dir.z)
+	_ghost_last_ground = Vector2(INF, INF)
 	_ghost = Node3D.new()
-	_ghost.rotation = Vector3(0.0, _yaw, 0.0)
-	_ghost_building = BuildingMeshes.build(id, BuildingMeshes.ghost_mat(GHOST_OK))
+	_ghost_building = BuildingMeshes.build(id, _ghost_mat_ok)
+	# Solo gira el cuerpo, no la raiz: la cimentacion se muestrea sobre una
+	# rejilla alineada con los ejes del mundo.
+	_ghost_building.rotation = Vector3(0.0, deg_to_rad(_yaw), 0.0)
 	_ghost.add_child(_ghost_building)
 	_ghost_foundation = Node3D.new()
 	_ghost.add_child(_ghost_foundation)
@@ -369,16 +382,24 @@ func _process(delta: float) -> void:
 	_ghost.position = Vector3(ground.x, base_h, ground.y)
 	# Solo gira el cuerpo: la cimentacion se muestrea alineada con el mundo.
 	_ghost_building.rotation = Vector3(0.0, deg_to_rad(_yaw), 0.0)
+	var valid := _is_valid(ground, _pending)
+	# Reconstruir la cimentacion son ~25 MeshInstance3D + BoxMesh nuevos, y
+	# solo cambia si el raton se ha movido o si la validez ha cambiado. Antes
+	# se tiraba y se rehacia entera en cada frame aunque el raton estuviera
+	# quieto (el yaw no la afecta: ya no rota con el edificio).
+	if valid == _ghost_last_valid and ground.is_equal_approx(_ghost_last_ground):
+		return
+	_ghost_last_valid = valid
+	_ghost_last_ground = ground
+	var mat := _ghost_mat_ok if valid else _ghost_mat_bad
+	_update_ghost_material(mat)
 	for c in _ghost_foundation.get_children():
 		_ghost_foundation.remove_child(c)
 		c.queue_free()
-	var valid := _is_valid(ground, _pending)
-	_update_ghost_material(GHOST_OK if valid else GHOST_BAD)
-	_ghost_foundation.add_child(_make_foundation(ground, d.footprint, base_h, BuildingMeshes.ghost_mat(GHOST_OK if valid else GHOST_BAD)))
+	_ghost_foundation.add_child(_make_foundation(ground, d.footprint, base_h, mat))
 
 
-func _update_ghost_material(color: Color) -> void:
-	var m := BuildingMeshes.ghost_mat(color)
+func _update_ghost_material(m: Material) -> void:
 	for c in _ghost_building.get_children():
 		if c is MeshInstance3D:
 			(c as MeshInstance3D).material_override = m

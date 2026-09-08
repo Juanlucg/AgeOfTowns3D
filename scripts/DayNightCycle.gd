@@ -503,6 +503,10 @@ func _sun_elevation(t: float, peak: float) -> float:
 var _day_frac := 0.9
 var _sun_peak := 0.85
 
+# Ultima estacion/progreso aplicados, para no reescribir uniforms iguales.
+var _last_season := -1
+var _last_k := -1.0
+
 
 func _apply_lighting() -> void:
 	var k: float = get_season_progress()
@@ -542,29 +546,36 @@ func _apply_lighting() -> void:
 	_sky.set_shader_parameter("moon_dir", -sun_dir)
 	_sky.set_shader_parameter("moon_color", _v(MOON_DISC_COLOR))
 	_sky.set_shader_parameter("cloud_day", sky_curve)
-	_sky.set_shader_parameter("cloud_amount", _sfloat(CLOUD_AMOUNT_BY_SEASON, k))
-	_sky.set_shader_parameter("cloud_color", _v(_scolor(CLOUD_COLOR_BY_SEASON, k)))
 
 	# Luz ambiental: la noche nunca queda a oscuras; color por estacion
 	_env.ambient_light_energy = lerpf(NIGHT_AMBIENT, DAY_AMBIENT, day_curve)
 	_env.ambient_light_color = Color(0.35, 0.45, 0.65).lerp(_scolor(AMBIENT_DAY_BY_SEASON, k), day_curve)
 
-	# Terreno: colores de bioma y linea de nieve de la estacion
-	if _terrain_mat != null:
-		_terrain_mat.set_shader_parameter("u_plains", _v(_scolor(PLAINS_BY_SEASON, k)))
-		_terrain_mat.set_shader_parameter("u_forest", _v(_scolor(FOREST_BY_SEASON, k)))
-		_terrain_mat.set_shader_parameter("u_snow", _v(_scolor(SNOW_COLOR_BY_SEASON, k)))
-		_terrain_mat.set_shader_parameter("u_snow_level", _sfloat(SNOW_LEVEL_BY_SEASON, k))
-		_terrain_mat.set_shader_parameter("u_snow_cover", _snow_cover)
-		_terrain_mat.set_shader_parameter("u_wet", _wet_amount)
-		_terrain_mat.set_shader_parameter("u_rain_ripple", _rain_ripple)
+	# Lo que solo depende de la estacion (paleta del terreno, tinte del
+	# follaje, color de la niebla) se refresca solo cuando la estacion avanza.
+	# get_season_progress() cambia una vez por dia de juego, no por frame: antes
+	# esto reescribia 6 uniforms + 3 del follaje 60 veces por segundo para
+	# poner exactamente los mismos valores.
+	# u_snow_cover / u_wet / u_rain_ripple ya los escribe _update_ground_weather(),
+	# que corre despues en el mismo frame: aqui se escribian por duplicado.
+	var season := get_season()
+	if season != _last_season or not is_equal_approx(k, _last_k):
+		_last_season = season
+		_last_k = k
+		if _terrain_mat != null:
+			_terrain_mat.set_shader_parameter("u_plains", _v(_scolor(PLAINS_BY_SEASON, k)))
+			_terrain_mat.set_shader_parameter("u_forest", _v(_scolor(FOREST_BY_SEASON, k)))
+			_terrain_mat.set_shader_parameter("u_snow", _v(_scolor(SNOW_COLOR_BY_SEASON, k)))
+			_terrain_mat.set_shader_parameter("u_snow_level", _sfloat(SNOW_LEVEL_BY_SEASON, k))
+		_sky.set_shader_parameter("cloud_amount", _sfloat(CLOUD_AMOUNT_BY_SEASON, k))
+		_sky.set_shader_parameter("cloud_color", _v(_scolor(CLOUD_COLOR_BY_SEASON, k)))
+		_env.fog_light_color = _scolor(FOG_COLOR_BY_SEASON, k)
+		if _veg != null:
+			_veg.apply_season(season, k)
 
-	# Niebla de la estacion
+	# La densidad de niebla si varia por frame: _update_ground_weather le suma
+	# el extra de lluvia/nieve.
 	_env.fog_density = _sfloat(FOG_DENSITY_BY_SEASON, k)
-	_env.fog_light_color = _scolor(FOG_COLOR_BY_SEASON, k)
-
-	if _veg != null:
-		_veg.apply_season(get_season(), k)
 
 
 func dev_set_hour(h: float) -> void:
@@ -591,6 +602,13 @@ func dev_set_paused(p: bool) -> void:
 	dev_paused = p
 
 
+# Ultima intensidad aplicada. Reconfigurar el ParticleProcessMaterial y, sobre
+# todo, reasignar GPUParticles3D.amount reinicia el sistema de particulas: antes
+# se hacia en cada frame aunque el clima no hubiera cambiado.
+var _last_rain := -1.0
+var _last_snow := -1.0
+
+
 func _apply_weather() -> void:
 	if _rain == null or _snow == null:
 		return
@@ -611,6 +629,10 @@ func _apply_weather() -> void:
 		var k: float = get_season_progress()
 		rain = _sfloat(RAIN_BY_SEASON, k)
 		snow = _sfloat(SNOW_BY_SEASON, k)
+	if is_equal_approx(rain, _last_rain) and is_equal_approx(snow, _last_snow):
+		return
+	_last_rain = rain
+	_last_snow = snow
 	if rain > 0.001:
 		var pm := _rain.process_material as ParticleProcessMaterial
 		pm.gravity = Vector3(0.0, -55.0, 0.0)
@@ -712,8 +734,8 @@ func _update_rain_height() -> void:
 	if _snow != null:
 		_snow.global_position = pos_snow
 	if _rain_splash != null:
-		var hs: float = Terrain.height_at(Vector2(_cam_rig.global_position.x, _cam_rig.global_position.z))
-		_rain_splash.global_position = Vector3(half, hs + 0.25, half)
+		# Reutiliza la altura ya consultada arriba (antes se pedia dos veces).
+		_rain_splash.global_position = Vector3(half, h + 0.25, half)
 
 
 func _v(c: Color) -> Vector3:
