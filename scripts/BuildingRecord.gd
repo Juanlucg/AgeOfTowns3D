@@ -11,6 +11,7 @@ var type: StringName = &""
 var pos: Vector2 = Vector2.ZERO
 var yaw: float = 0.0
 var node: Node3D = null
+var field: Node3D = null         # granjas: mesh del campo de cultivo (hijo de Buildings, no del edificio)
 var timer: float = 0.0          # segundos desde la ultima produccion
 var amount: float = 0.0         # override de BuildingDef.prod_amount (granjas con campo)
 var crop: String = ""           # tipo de cultivo en granjas (trigo/zanahoria/bayas), "" si no aplica

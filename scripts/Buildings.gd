@@ -226,8 +226,11 @@ func demolish(rec: BuildingRecord) -> void:
 	if _selected == rec:
 		deselect()
 	_placed.erase(rec)
+	# Casita + campo (si es granja) se liberan a la vez.
 	if rec.node != null and is_instance_valid(rec.node):
 		rec.node.queue_free()
+	if rec.field != null and is_instance_valid(rec.field):
+		rec.field.queue_free()
 	if d != null:
 		building_demolished.emit(rec.type, rec.pos)
 		message_requested.emit("%s demolido (reembolso 50%%)" % d.display_name)
@@ -485,9 +488,11 @@ func _confirm_field() -> void:
 		return
 	var crop_color: Color = CROP_COLORS[_field_crop]
 	var field := FieldMesh.build(rmin, rmax, crop_color, false)
-	# El campo es hijo de la casita: al demoler la granja con queue_free(),
-	# el campo se libera automaticamente con ella.
-	_field_farm.node.add_child(field)
+	# El campo queda en mundo (no hijo del edificio, porque la casita tiene
+	# yaw y eso distorsionaria el campo). Se guarda la referencia en el
+	# record para que demolish() lo limpie atomicamente con la casita.
+	add_child(field)
+	_field_farm.field = field
 	var center := Vector2((rmin.x + rmax.x) * 0.5, (rmin.y + rmax.y) * 0.5)
 	var field_radius := maxf(w, d) + 1.5
 	place_clear_requested.emit(center, field_radius)
