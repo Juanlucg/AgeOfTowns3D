@@ -38,7 +38,9 @@ const FIELD_RATE := 0.4
 ## Hueco que se deja a la vista entre la casa de la granja y la tierra del
 ## huerto, para que se lean como dos cosas separadas.
 const FIELD_HOUSE_GAP := 0.4
-const STONE_COLOR := Color(0.50, 0.50, 0.52)
+const STONE_COLOR := Color(0.58, 0.55, 0.49)   # gris arenoso: el gris neutro
+                                               # se volvia azul con la luz
+                                               # ambiental de primavera
 const DEMOLISH_REFUND := 0.5   # fraccion del coste que se devuelve
 
 const CROP_COLORS := {
