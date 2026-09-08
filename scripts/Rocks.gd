@@ -29,7 +29,19 @@ func _ready() -> void:
 	_mmis[0] = _create_empty_mmi(_meshes[0])
 	_mmis[1] = _create_empty_mmi(_meshes[1])
 	_mmis[2] = _create_empty_mmi(_meshes[2])
-	WorkerThreadPool.add_task(_populate)
+	_task_id = WorkerThreadPool.add_task(_populate)
+
+
+# Id de la tarea del WorkerThreadPool. Antes no se guardaba y nadie la
+# esperaba: si se salia del juego mientras generaba, el hilo seguia
+# tocando este nodo mientras Godot lo destruia.
+var _task_id := -1
+
+
+func _exit_tree() -> void:
+	if _task_id != -1:
+		WorkerThreadPool.wait_for_task_completion(_task_id)
+		_task_id = -1
 
 
 var _meshes: Array = [null, null, null]

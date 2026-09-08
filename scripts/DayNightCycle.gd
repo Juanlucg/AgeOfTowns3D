@@ -13,6 +13,16 @@ signal time_changed(day: int, season: int, hour: float, weather_name: String)
 @export var cycle_duration := 600.0   # segundos por dia completo (10 min)
 @export var start_time := 0.42        # hora inicial (0.0 = medianoche, 0.5 = mediodia)
 @export var days_per_season := 2      # dias (ciclos dia/noche) por estacion
+## Clima forzado al arrancar la partida. "auto" = lo deciden las estaciones.
+##
+## OJO: mientras esto no sea "auto", las tablas RAIN_BY_SEASON y
+## SNOW_BY_SEASON no se usan nunca y el clima no cambia con la estacion.
+## Antes este valor vivia dentro de _dev_weather_override (la variable del
+## panel de desarrollo) fijado a "despejado", asi que el sistema de clima
+## estacional estaba apagado de fabrica y solo se encendia poniendo "Auto"
+## a mano en el panel dev. Se mantiene el comportamiento anterior por
+## defecto; ponlo en "auto" para que el clima siga a las estaciones.
+@export_enum("auto", "despejado", "lluvia", "nieve") var initial_weather: String = "despejado"
 
 const SEASONS := ["Primavera", "Verano", "Otoño", "Invierno"]
 
@@ -209,7 +219,7 @@ var _rain_splash: GPUParticles3D
 
 # --- Herramientas dev ---
 var dev_paused := false
-var _dev_weather_override := "despejado"  # ""=auto, "despejado"/"lluvia"/"nieve" — inicia despejado
+var _dev_weather_override := ""  # ""=auto, "despejado"/"lluvia"/"nieve"
 
 # Acumulacion visual de nieve y mojado por lluvia
 var _snow_cover := 0.0  # 0..0.55 fina capa
@@ -219,6 +229,7 @@ var _rain_ripple := 0.0
 
 func _ready() -> void:
 	_time = start_time
+	_dev_weather_override = "" if initial_weather == "auto" else initial_weather
 
 	for child in get_parent().get_children():
 		if child is DirectionalLight3D:

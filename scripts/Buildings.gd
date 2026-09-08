@@ -356,7 +356,6 @@ func cancel_placement() -> void:
 
 
 func _process(delta: float) -> void:
-	_tick_production(delta)
 	if _field_mode:
 		_update_field_ghost()
 		return
@@ -383,14 +382,6 @@ func _update_ghost_material(color: Color) -> void:
 	for c in _ghost_building.get_children():
 		if c is MeshInstance3D:
 			(c as MeshInstance3D).material_override = m
-
-
-# Antes: loop global cada frame sobre todos los edificios.
-# Ahora: cada edificio con produccion tiene su propio Timer como hijo del
-# node. Al demolir, queue_free() del node se lleva el Timer consigo. Sin
-# polling, sin iteraciones innecesarias.
-func _tick_production(_delta: float) -> void:
-	pass
 
 
 func _attach_production_timer(rec: BuildingRecord) -> void:
@@ -579,13 +570,15 @@ func _confirm_field() -> void:
 
 
 func _cancel_field() -> void:
+	# Solo se devuelve lo que se llego a cobrar: en modo dev la granja fue
+	# gratis, asi que devolverla regalaba recursos (colocar y cancelar en
+	# bucle era madera infinita).
+	var was_free := _field_farm != null and _field_farm.dev
 	_placed.erase(_field_farm)
 	if _field_farm != null and _field_farm.node != null:
 		_field_farm.node.queue_free()
-	var cost: Dictionary = get_def(&"granja").cost
-	for k in cost:
-		Economy.amounts[k] = Economy.amounts[k] + cost[k]
-	Economy.changed.emit()
+	if not was_free:
+		Economy.refund(get_def(&"granja").cost)
 	message_requested.emit("Granja cancelada (recursos devueltos)")
 	_end_field_mode()
 	cancel_placement()

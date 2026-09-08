@@ -75,6 +75,16 @@ func can_afford(cost: Dictionary) -> bool:
 	return true
 
 
+# Devuelve un coste ya cobrado (p.ej. cancelar una construccion a medias).
+# Pasa por add(), asi que respeta la capacidad de almacenaje: si el almacen se
+# lleno mientras tanto, se devuelve lo que quepa y no mas. Antes los sitios de
+# llamada tocaban `amounts` a mano y podian dejar el almacen por encima de su
+# capacidad.
+func refund(cost: Dictionary) -> void:
+	for k in cost:
+		add(k, cost[k])
+
+
 func spend_all(cost: Dictionary) -> bool:
 	if not can_afford(cost):
 		return false
