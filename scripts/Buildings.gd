@@ -189,14 +189,22 @@ func get_selected() -> BuildingRecord:
 
 
 # Devuelve el BuildingRecord bajo el punto del mundo, o null.
-# Usa la mitad del footprint como radio de hit-test (edificios mas grandes
-# son mas faciles de clicar).
+# Para edificios con campo (granjas), un clic en cualquier parte del campo
+# tambien selecciona la granja: el campo ocupa mucha superficie y bloquearia
+# el clic a la casita.
 func building_at(ground: Vector2) -> BuildingRecord:
 	for b in _placed:
 		var d := get_def(b.type)
-		var radius := (d.footprint * 0.5) if d != null else 1.0
-		if b.pos.distance_to(ground) < radius:
+		if d == null:
+			continue
+		# 1. Casita: radio = footprint/2
+		if b.pos.distance_to(ground) < d.footprint * 0.5:
 			return b
+		# 2. Campo (si tiene): bounding box AABB en mundo
+		if b.field != null and b.field_min != b.field_max:
+			if ground.x >= b.field_min.x and ground.x <= b.field_max.x \
+				and ground.y >= b.field_min.y and ground.y <= b.field_max.y:
+				return b
 	return null
 
 
@@ -513,6 +521,10 @@ func _confirm_field() -> void:
 	# record para que demolish() lo limpie atomicamente con la casita.
 	add_child(field)
 	_field_farm.field = field
+	# Bounds del campo (con margen para la valla): para que se pueda clicar
+	# en cualquier parte del campo y seleccionar la granja.
+	_field_farm.field_min = Vector2(minf(rmin.x, rmax.x), minf(rmin.y, rmax.y))
+	_field_farm.field_max = Vector2(maxf(rmin.x, rmax.x), maxf(rmin.y, rmax.y))
 	var center := Vector2((rmin.x + rmax.x) * 0.5, (rmin.y + rmax.y) * 0.5)
 	var field_radius := maxf(w, d) + 1.5
 	place_clear_requested.emit(center, field_radius)
@@ -535,6 +547,7 @@ func _cancel_field() -> void:
 	Economy.changed.emit()
 	message_requested.emit("Granja cancelada (recursos devueltos)")
 	_end_field_mode()
+	cancel_placement()
 
 
 func _end_field_mode() -> void:
@@ -543,7 +556,8 @@ func _end_field_mode() -> void:
 		_field_ghost.queue_free()
 		_field_ghost = null
 	_field_farm = null
-	deselect()
+	# Limpia la colocacion (pending + fantasma + boton del menu).
+	cancel_placement()
 
 
 func _update_field_ghost() -> void:
