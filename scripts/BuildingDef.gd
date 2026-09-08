@@ -10,6 +10,7 @@ enum Biome { LLANURA = 0, BOSQUE = 1, MONTANA = 2 }
 
 @export var id: StringName = &""
 @export var display_name: String = ""
+@export var description: String = ""              # texto largo en el menu contextual
 @export var cost: Dictionary = {}              # {"madera": 25.0, ...}
 @export var prod_resource: StringName = &""     # "" = no produce
 @export var prod_amount: float = 0.0
@@ -18,6 +19,12 @@ enum Biome { LLANURA = 0, BOSQUE = 1, MONTANA = 2 }
 @export var biomes: Array[Biome] = []
 @export var hint: String = ""
 @export var color: Color = Color.WHITE
+# Capacidad mostrada en el menu (granero = 300 de comida, etc.). 0 = oculta.
+@export var capacity: int = 0
+@export var capacity_resource: StringName = &"" # recurso que llena la capacidad
+# Numero de trabajadores mostrados en el menu. 0 = sin panel de trabajadores.
+@export var worker_count: int = 0
+@export var worker_names: PackedStringArray = PackedStringArray()
 
 
 # Helpers que Buildings.gd usaba implicitamente.

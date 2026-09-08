@@ -105,11 +105,14 @@ func _make_granero() -> BuildingDef:
 	var d := BuildingDef.new()
 	d.id = &"granero"
 	d.display_name = "Granero"
+	d.description = "Almacena comida y grano. Aumenta la capacidad maxima del almacen del pueblo."
 	d.cost = {"madera": 25.0, "piedra": 15.0}
 	d.footprint = 1.0
 	d.biomes = [BuildingDef.Biome.LLANURA]
 	d.hint = "+50 almacen"
 	d.color = Color(0.95, 0.65, 0.2)
+	d.capacity = 300
+	d.capacity_resource = &"comida"
 	return d
 
 
@@ -117,6 +120,7 @@ func _make_granja() -> BuildingDef:
 	var d := BuildingDef.new()
 	d.id = &"granja"
 	d.display_name = "Granja"
+	d.description = "Casita de campo con una parcela cultivable. Produce comida segun el tamano del campo."
 	d.cost = {"madera": 25.0}
 	d.prod_resource = &"comida"
 	d.prod_amount = 2.0
@@ -125,6 +129,8 @@ func _make_granja() -> BuildingDef:
 	d.biomes = [BuildingDef.Biome.LLANURA]
 	d.hint = "casita + campo a elegir"
 	d.color = Color(0.55, 0.72, 0.3)
+	d.worker_count = 3
+	d.worker_names = PackedStringArray(["Campesino", "Jornalero", "Granjero"])
 	return d
 
 
@@ -132,6 +138,7 @@ func _make_aserradero() -> BuildingDef:
 	var d := BuildingDef.new()
 	d.id = &"aserradero"
 	d.display_name = "Aserradero"
+	d.description = "Cabaña abierta con mesa de corte. Convierte tiempo en madera."
 	d.cost = {"madera": 30.0}
 	d.prod_resource = &"madera"
 	d.prod_amount = 2.0
@@ -140,6 +147,8 @@ func _make_aserradero() -> BuildingDef:
 	d.biomes = [BuildingDef.Biome.BOSQUE]
 	d.hint = "+2 madera / 5s"
 	d.color = Color(0.62, 0.42, 0.22)
+	d.worker_count = 2
+	d.worker_names = PackedStringArray(["Leñador", "Carpintero"])
 	return d
 
 
@@ -147,6 +156,7 @@ func _make_cantera() -> BuildingDef:
 	var d := BuildingDef.new()
 	d.id = &"cantera"
 	d.display_name = "Cantera"
+	d.description = "Bloques de piedra apilados al pie de la montana. Produce piedra."
 	d.cost = {"madera": 20.0, "piedra": 10.0}
 	d.prod_resource = &"piedra"
 	d.prod_amount = 2.0
@@ -155,6 +165,8 @@ func _make_cantera() -> BuildingDef:
 	d.biomes = [BuildingDef.Biome.MONTANA]
 	d.hint = "+2 piedra / 5s"
 	d.color = Color(0.55, 0.55, 0.58)
+	d.worker_count = 2
+	d.worker_names = PackedStringArray(["Cantero", "Picapedrero"])
 	return d
 
 
@@ -177,9 +189,13 @@ func get_selected() -> BuildingRecord:
 
 
 # Devuelve el BuildingRecord bajo el punto del mundo, o null.
+# Usa la mitad del footprint como radio de hit-test (edificios mas grandes
+# son mas faciles de clicar).
 func building_at(ground: Vector2) -> BuildingRecord:
 	for b in _placed:
-		if b.pos.distance_to(ground) < 1.5:
+		var d := get_def(b.type)
+		var radius := (d.footprint * 0.5) if d != null else 1.0
+		if b.pos.distance_to(ground) < radius:
 			return b
 	return null
 
@@ -217,20 +233,24 @@ func demolish_selected() -> void:
 func demolish(rec: BuildingRecord) -> void:
 	if rec == null:
 		return
+	# Reembolso antes de cualquier cleanup para que el HUD lo vea.
 	var d := get_def(rec.type)
 	if d != null:
 		for k in d.cost:
 			Economy.amounts[k] = Economy.amounts[k] + d.cost[k] * DEMOLISH_REFUND
 		Economy.changed.emit()
-	# Limpia seleccion si era este edificio (y desactiva el menu).
+	# Limpia la seleccion si era este edificio (esto cierra el menu contextual).
 	if _selected == rec:
 		deselect()
+	# Quita del registro ANTES de liberar los nodos para que is_placing() y
+	# demas consultas ya no lo vean.
 	_placed.erase(rec)
-	# Casita + campo (si es granja) se liberan a la vez.
+	# Libera los nodos visuales (casita y, si es granja, el campo).
 	if rec.node != null and is_instance_valid(rec.node):
 		rec.node.queue_free()
 	if rec.field != null and is_instance_valid(rec.field):
 		rec.field.queue_free()
+	# Avisos finales (el menu ya esta oculto en este punto).
 	if d != null:
 		building_demolished.emit(rec.type, rec.pos)
 		message_requested.emit("%s demolido (reembolso 50%%)" % d.display_name)
