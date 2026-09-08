@@ -261,6 +261,12 @@ func _ready() -> void:
 	_env.fog_enabled = true
 	_env.fog_density = 0.0
 	_env.fog_light_color = FOG_COLOR_BY_SEASON[0]
+	# Niebla aerea: lo lejano toma el color del cielo en esa misma direccion
+	# en vez de desvanecerse hacia un gris plano. Sin esto el mar acaba en una
+	# banda gris antes de llegar al horizonte, y el terreno lejano se apaga.
+	# Pon fog_aerial_perspective a 0.0 para volver al aspecto anterior.
+	_env.fog_aerial_perspective = 1.0
+	_env.fog_sky_affect = 0.0
 	var we := WorldEnvironment.new()
 	we.environment = _env
 	get_parent().add_child.call_deferred(we)
