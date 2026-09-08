@@ -6,207 +6,227 @@ class_name FieldMesh
 ## Extraido de [Buildings] para aislar la complejidad geometrica.
 ## Acepta un [Callable] opcional [param get_height] para tests con altura
 ## sintetica (por defecto usa [Terrain].height_at).
+##
+## El campo se construye en su PROPIO sistema de coordenadas (x a lo ancho, z
+## a lo largo, origen en el centro) y se orienta con la rotacion del nodo. Antes
+## se construia directamente en coordenadas de mundo alineadas con los ejes:
+## [Buildings] calculaba un rectangulo girado con la casa y luego lo aplastaba
+## a su caja envolvente, asi que con la granja girada el campo no seguia la
+## direccion del arrastre (a 30 grados, arrastrar 6x3 m daba un campo de 7x5,5)
+## y ademas se comia la esquina de la casa.
+##
+## Girar solo alrededor de Y no cambia la altura de ningun punto, asi que las
+## alturas se muestrean en la posicion de mundo real y se guardan tal cual como
+## coordenada Y local.
 
+const CELL := 0.5
+## Franja de tierra desnuda alrededor de los cultivos.
+const MARGIN := 0.5
 const FIELD_SPACING := 0.55
+const SOIL_DEPTH := 0.5
+const SOIL_RAISE := 0.01
+const FENCE_SPACING := 1.0
 const SOIL_COLOR := Color(0.40, 0.28, 0.14)
 const FENCE_COLOR := Color(0.50, 0.35, 0.18)
 
 
-# `crop_color` es el color de los cultivos actuales del campo (trigo/zanahoria/bayas).
-# `ghost` controla si el material es translucido (vista previa).
-# `get_height` recibe una posicion del mundo y devuelve la altura local del
-# terreno; por defecto usa el autoload Terrain.
+## Lo que ocupa de verdad un campo con [param size] de cultivos: la zona
+## sembrada mas el margen de tierra, redondeado a celdas enteras.
+## [Buildings] la necesita para saber cuanto sitio dejarle a la casa.
+static func outer_size(size: Vector2) -> Vector2:
+	return Vector2(
+		ceilf((size.x + MARGIN * 2.0) / CELL) * CELL,
+		ceilf((size.y + MARGIN * 2.0) / CELL) * CELL,
+	)
+
+
+## [param center] es el centro del campo en el mundo, [param size] el tamano de
+## la zona sembrada (sin margen) y [param yaw] su orientacion en radianes, la
+## misma que la de la granja.
+##
+## [param crop_color] es el color del cultivo (trigo/zanahoria/bayas) y
+## [param ghost] hace el material translucido para la vista previa.
 static func build(
-	rmin: Vector2,
-	rmax: Vector2,
+	center: Vector2,
+	size: Vector2,
+	yaw: float,
 	crop_color: Color,
 	ghost: bool,
 	get_height: Callable = Callable()
 ) -> Node3D:
 	if not get_height.is_valid():
 		get_height = func(p: Vector2) -> float: return Terrain.height_at(p)
+
+	# Ejes del campo vistos desde el mundo: +z local hacia `back`, +x hacia `side`.
+	var back := Vector2(-sin(yaw), -cos(yaw))
+	var side := Vector2(back.y, -back.x)
+	# Altura del terreno bajo un punto dado en coordenadas del campo.
+	var h := func(lx: float, lz: float) -> float:
+		return get_height.call(center + side * lx + back * lz) as float
+
+	var outer := outer_size(size)
+	var hx: float = outer.x * 0.5
+	var hz: float = outer.y * 0.5
+
 	var node := Node3D.new()
-	var cell := 0.5
-	var soil_h := 0.5
-	var soil_raise := 0.01
-	var margin := 0.5
-	var rm := Vector2(rmin.x - margin, rmin.y - margin)
-	var rx := Vector2(rmax.x + margin, rmax.y + margin)
+	node.position = Vector3(center.x, 0.0, center.y)
+	# Una rotacion en Y manda el punto local (x,z) a (x·cos + z·sin, -x·sin + z·cos).
+	# Con yaw+PI, el eje local +z cae sobre `back` y el +x sobre `side`.
+	node.rotation.y = yaw + PI
+
 	var soil_mat := _ghost_mat(Color(0.3, 0.25, 0.15, 0.5)) if ghost else _mat(SOIL_COLOR)
-	var cx: float = floori(rm.x / cell) * cell
-	var cz: float = floori(rm.y / cell) * cell
-	var ex: float = ceili(rx.x / cell) * cell
-	var ez: float = ceili(rx.y / cell) * cell
-	# --- Suelo: triangulos adaptandose al terreno, con paredes laterales ---
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var gz: float = cz
-	while gz < ez:
-		var gx: float = cx
-		while gx < ex:
-			var x0: float = gx
-			var z0: float = gz
-			var x1: float = gx + cell
-			var z1: float = gz + cell
-			var y00: float = get_height.call(Vector2(x0, z0)) + soil_raise
-			var y10: float = get_height.call(Vector2(x1, z0)) + soil_raise
-			var y01: float = get_height.call(Vector2(x0, z1)) + soil_raise
-			var y11: float = get_height.call(Vector2(x1, z1)) + soil_raise
-			st.add_vertex(Vector3(x0, y00, z0))
-			st.add_vertex(Vector3(x1, y10, z0))
-			st.add_vertex(Vector3(x0, y01, z1))
-			st.add_vertex(Vector3(x1, y10, z0))
+
+	# --- Suelo: triangulos adaptandose al terreno ---
+	var gz: float = -hz
+	while gz < hz - 0.001:
+		var gx: float = -hx
+		while gx < hx - 0.001:
+			var x1: float = gx + CELL
+			var z1: float = gz + CELL
+			var y00: float = h.call(gx, gz) + SOIL_RAISE
+			var y10: float = h.call(x1, gz) + SOIL_RAISE
+			var y01: float = h.call(gx, z1) + SOIL_RAISE
+			var y11: float = h.call(x1, z1) + SOIL_RAISE
+			st.add_vertex(Vector3(gx, y00, gz))
+			st.add_vertex(Vector3(x1, y10, gz))
+			st.add_vertex(Vector3(gx, y01, z1))
+			st.add_vertex(Vector3(x1, y10, gz))
 			st.add_vertex(Vector3(x1, y11, z1))
-			st.add_vertex(Vector3(x0, y01, z1))
-			gx += cell
-		gz += cell
-	# Muro inferior (donde el terreno cae por debajo del nivel del campo)
+			st.add_vertex(Vector3(gx, y01, z1))
+			gx += CELL
+		gz += CELL
+
+	# --- Paredes laterales, hasta por debajo del punto mas bajo del terreno ---
 	var wall_min_h: float = 1e9
-	gz = cz
-	while gz <= ez:
-		var gx: float = cx
-		while gx <= ex:
-			wall_min_h = minf(wall_min_h, get_height.call(Vector2(gx, gz)) + soil_raise)
-			gx += cell
-		gz += cell
-	var wall_bot: float = wall_min_h - soil_h
-	var gx: float = cx
-	while gx < ex:
-		var ty0: float = get_height.call(Vector2(gx, cz)) + soil_raise
-		var ty1: float = get_height.call(Vector2(gx + cell, cz)) + soil_raise
-		st.add_vertex(Vector3(gx, ty0, cz))
-		st.add_vertex(Vector3(gx + cell, ty1, cz))
-		st.add_vertex(Vector3(gx, wall_bot, cz))
-		st.add_vertex(Vector3(gx + cell, ty1, cz))
-		st.add_vertex(Vector3(gx + cell, wall_bot, cz))
-		st.add_vertex(Vector3(gx, wall_bot, cz))
-		ty0 = get_height.call(Vector2(gx, ez)) + soil_raise
-		ty1 = get_height.call(Vector2(gx + cell, ez)) + soil_raise
-		st.add_vertex(Vector3(gx + cell, ty1, ez))
-		st.add_vertex(Vector3(gx, ty0, ez))
-		st.add_vertex(Vector3(gx, wall_bot, ez))
-		st.add_vertex(Vector3(gx + cell, ty1, ez))
-		st.add_vertex(Vector3(gx, wall_bot, ez))
-		st.add_vertex(Vector3(gx + cell, wall_bot, ez))
-		gx += cell
-	gz = cz
-	while gz < ez:
-		var ty0: float = get_height.call(Vector2(cx, gz)) + soil_raise
-		var ty1: float = get_height.call(Vector2(cx, gz + cell)) + soil_raise
-		st.add_vertex(Vector3(cx, ty1, gz + cell))
-		st.add_vertex(Vector3(cx, ty0, gz))
-		st.add_vertex(Vector3(cx, wall_bot, gz))
-		st.add_vertex(Vector3(cx, ty0, gz))
-		st.add_vertex(Vector3(cx, wall_bot, gz + cell))
-		st.add_vertex(Vector3(cx, wall_bot, gz))
-		ty0 = get_height.call(Vector2(ex, gz)) + soil_raise
-		ty1 = get_height.call(Vector2(ex, gz + cell)) + soil_raise
-		st.add_vertex(Vector3(ex, ty0, gz))
-		st.add_vertex(Vector3(ex, ty1, gz + cell))
-		st.add_vertex(Vector3(ex, wall_bot, gz))
-		st.add_vertex(Vector3(ex, ty1, gz + cell))
-		st.add_vertex(Vector3(ex, wall_bot, gz + cell))
-		st.add_vertex(Vector3(ex, wall_bot, gz))
-		gz += cell
+	gz = -hz
+	while gz <= hz + 0.001:
+		var gx: float = -hx
+		while gx <= hx + 0.001:
+			wall_min_h = minf(wall_min_h, h.call(gx, gz) + SOIL_RAISE)
+			gx += CELL
+		gz += CELL
+	var wall_bot: float = wall_min_h - SOIL_DEPTH
+
+	var wx: float = -hx
+	while wx < hx - 0.001:
+		var nx: float = wx + CELL
+		var ty0: float = h.call(wx, -hz) + SOIL_RAISE
+		var ty1: float = h.call(nx, -hz) + SOIL_RAISE
+		st.add_vertex(Vector3(wx, ty0, -hz))
+		st.add_vertex(Vector3(nx, ty1, -hz))
+		st.add_vertex(Vector3(wx, wall_bot, -hz))
+		st.add_vertex(Vector3(nx, ty1, -hz))
+		st.add_vertex(Vector3(nx, wall_bot, -hz))
+		st.add_vertex(Vector3(wx, wall_bot, -hz))
+		ty0 = h.call(wx, hz) + SOIL_RAISE
+		ty1 = h.call(nx, hz) + SOIL_RAISE
+		st.add_vertex(Vector3(nx, ty1, hz))
+		st.add_vertex(Vector3(wx, ty0, hz))
+		st.add_vertex(Vector3(wx, wall_bot, hz))
+		st.add_vertex(Vector3(nx, ty1, hz))
+		st.add_vertex(Vector3(wx, wall_bot, hz))
+		st.add_vertex(Vector3(nx, wall_bot, hz))
+		wx += CELL
+
+	var wz: float = -hz
+	while wz < hz - 0.001:
+		var nz: float = wz + CELL
+		var ty0: float = h.call(-hx, wz) + SOIL_RAISE
+		var ty1: float = h.call(-hx, nz) + SOIL_RAISE
+		st.add_vertex(Vector3(-hx, ty1, nz))
+		st.add_vertex(Vector3(-hx, ty0, wz))
+		st.add_vertex(Vector3(-hx, wall_bot, wz))
+		st.add_vertex(Vector3(-hx, ty0, wz))
+		st.add_vertex(Vector3(-hx, wall_bot, nz))
+		st.add_vertex(Vector3(-hx, wall_bot, wz))
+		ty0 = h.call(hx, wz) + SOIL_RAISE
+		ty1 = h.call(hx, nz) + SOIL_RAISE
+		st.add_vertex(Vector3(hx, ty0, wz))
+		st.add_vertex(Vector3(hx, ty1, nz))
+		st.add_vertex(Vector3(hx, wall_bot, wz))
+		st.add_vertex(Vector3(hx, ty1, nz))
+		st.add_vertex(Vector3(hx, wall_bot, nz))
+		st.add_vertex(Vector3(hx, wall_bot, wz))
+		wz += CELL
+
 	st.generate_normals()
 	var soil_mi := MeshInstance3D.new()
 	soil_mi.mesh = st.commit()
 	soil_mi.material_override = soil_mat
 	node.add_child(soil_mi)
+
 	if not ghost:
-		_add_fence(node, cx, cz, ex, ez, get_height)
-	_add_crops(node, rmin, rmax, crop_color, ghost, get_height)
+		_add_fence(node, hx, hz, h)
+	_add_crops(node, size, crop_color, ghost, h)
 	return node
 
 
 # Valla perimetral con postes cada metro y dos railes horizontales.
-static func _add_fence(node: Node3D, fx0: float, fz0: float, fx1: float, fz1: float, get_height: Callable) -> void:
+# `h` da la altura del terreno para un punto en coordenadas del campo.
+static func _add_fence(node: Node3D, hx: float, hz: float, h: Callable) -> void:
 	var fence_mat := _mat(FENCE_COLOR)
 	var post := BoxMesh.new()
 	post.size = Vector3(0.03, 0.2, 0.03)
-	var spacing := 1.0
-	var px: float = fx0
-	while px <= fx1 + 0.01:
-		var ph: float = get_height.call(Vector2(px, fz0))
-		node.add_child(_part(post, fence_mat, Vector3(px, ph + 0.10, fz0)))
-		ph = get_height.call(Vector2(px, fz1))
-		node.add_child(_part(post, fence_mat, Vector3(px, ph + 0.10, fz1)))
-		px += spacing
-	var pz: float = fz0
-	while pz <= fz1 + 0.01:
-		var ph: float = get_height.call(Vector2(fx0, pz))
-		node.add_child(_part(post, fence_mat, Vector3(fx0, ph + 0.10, pz)))
-		ph = get_height.call(Vector2(fx1, pz))
-		node.add_child(_part(post, fence_mat, Vector3(fx1, ph + 0.10, pz)))
-		pz += spacing
+	var px: float = -hx
+	while px <= hx + 0.01:
+		node.add_child(_part(post, fence_mat, Vector3(px, h.call(px, -hz) + 0.10, -hz)))
+		node.add_child(_part(post, fence_mat, Vector3(px, h.call(px, hz) + 0.10, hz)))
+		px += FENCE_SPACING
+	var pz: float = -hz
+	while pz <= hz + 0.01:
+		node.add_child(_part(post, fence_mat, Vector3(-hx, h.call(-hx, pz) + 0.10, pz)))
+		node.add_child(_part(post, fence_mat, Vector3(hx, h.call(hx, pz) + 0.10, pz)))
+		pz += FENCE_SPACING
+
 	var rail := BoxMesh.new()
 	rail.size = Vector3(0.02, 0.02, 1.0)
-	pz = fz0
-	while pz < fz1 - 0.01:
-		var nz: float = minf(pz + spacing, fz1)
-		var seg_len: float = nz - pz
-		var h0: float = get_height.call(Vector2(fx0, pz))
-		var h1: float = get_height.call(Vector2(fx0, nz))
-		var mid_h: float = (h0 + h1) * 0.5
-		var r1: MeshInstance3D = _part(rail, fence_mat, Vector3(fx0, mid_h + 0.15, pz + seg_len * 0.5))
-		r1.scale.z = seg_len
-		node.add_child(r1)
-		r1 = _part(rail, fence_mat, Vector3(fx0, mid_h + 0.06, pz + seg_len * 0.5))
-		r1.scale.z = seg_len
-		node.add_child(r1)
-		h0 = get_height.call(Vector2(fx1, pz))
-		h1 = get_height.call(Vector2(fx1, nz))
-		mid_h = (h0 + h1) * 0.5
-		r1 = _part(rail, fence_mat, Vector3(fx1, mid_h + 0.15, pz + seg_len * 0.5))
-		r1.scale.z = seg_len
-		node.add_child(r1)
-		r1 = _part(rail, fence_mat, Vector3(fx1, mid_h + 0.06, pz + seg_len * 0.5))
-		r1.scale.z = seg_len
-		node.add_child(r1)
+	# Lados largos (paralelos a z)
+	pz = -hz
+	while pz < hz - 0.01:
+		var nz: float = minf(pz + FENCE_SPACING, hz)
+		var seg: float = nz - pz
+		for edge: float in [-hx, hx]:
+			var mid_h: float = (h.call(edge, pz) + h.call(edge, nz)) * 0.5
+			for dy: float in [0.15, 0.06]:
+				var r := _part(rail, fence_mat, Vector3(edge, mid_h + dy, pz + seg * 0.5))
+				r.scale.z = seg
+				node.add_child(r)
 		pz = nz
-	px = fx0
-	while px < fx1 - 0.01:
-		var nx: float = minf(px + spacing, fx1)
-		var seg_len: float = nx - px
-		var h0: float = get_height.call(Vector2(px, fz0))
-		var h1: float = get_height.call(Vector2(nx, fz0))
-		var mid_h: float = (h0 + h1) * 0.5
-		var r1: MeshInstance3D = _part(rail, fence_mat, Vector3(px + seg_len * 0.5, mid_h + 0.15, fz0))
-		r1.rotation.y = PI * 0.5
-		r1.scale.z = seg_len
-		node.add_child(r1)
-		r1 = _part(rail, fence_mat, Vector3(px + seg_len * 0.5, mid_h + 0.06, fz0))
-		r1.rotation.y = PI * 0.5
-		r1.scale.z = seg_len
-		node.add_child(r1)
-		h0 = get_height.call(Vector2(px, fz1))
-		h1 = get_height.call(Vector2(nx, fz1))
-		mid_h = (h0 + h1) * 0.5
-		r1 = _part(rail, fence_mat, Vector3(px + seg_len * 0.5, mid_h + 0.15, fz1))
-		r1.rotation.y = PI * 0.5
-		r1.scale.z = seg_len
-		node.add_child(r1)
-		r1 = _part(rail, fence_mat, Vector3(px + seg_len * 0.5, mid_h + 0.06, fz1))
-		r1.rotation.y = PI * 0.5
-		r1.scale.z = seg_len
-		node.add_child(r1)
+	# Lados cortos (paralelos a x)
+	px = -hx
+	while px < hx - 0.01:
+		var nx: float = minf(px + FENCE_SPACING, hx)
+		var seg: float = nx - px
+		for edge: float in [-hz, hz]:
+			var mid_h: float = (h.call(px, edge) + h.call(nx, edge)) * 0.5
+			for dy: float in [0.15, 0.06]:
+				var r := _part(rail, fence_mat, Vector3(px + seg * 0.5, mid_h + dy, edge))
+				r.rotation.y = PI * 0.5
+				r.scale.z = seg
+				node.add_child(r)
 		px = nx
 
 
 # Plantas en grid via MultiMesh (una sola draw call para todo el campo).
-static func _add_crops(node: Node3D, rmin: Vector2, rmax: Vector2, crop_color: Color, ghost: bool, get_height: Callable) -> void:
+static func _add_crops(node: Node3D, size: Vector2, crop_color: Color, ghost: bool, h: Callable) -> void:
 	var plant := BoxMesh.new()
 	plant.size = Vector3(0.12, 0.24, 0.12)
 	var transforms := PackedFloat32Array()
-	var spacing := FIELD_SPACING
-	var py: float = rmin.y + spacing * 0.5
-	while py <= rmax.y:
-		var px: float = rmin.x + spacing * 0.5
-		while px <= rmax.x:
-			var ph: float = get_height.call(Vector2(px, py))
-			transforms.append_array([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, px, ph + 0.12, py])
-			px += spacing
-		py += spacing
+	var hx: float = size.x * 0.5
+	var hz: float = size.y * 0.5
+	var pz: float = -hz + FIELD_SPACING * 0.5
+	while pz <= hz:
+		var px: float = -hx + FIELD_SPACING * 0.5
+		while px <= hx:
+			transforms.append_array([
+				1.0, 0.0, 0.0, 0.0,
+				1.0, 0.0, 0.0, 0.0,
+				1.0, px, h.call(px, pz) + 0.12, pz,
+			])
+			px += FIELD_SPACING
+		pz += FIELD_SPACING
 	if transforms.size() == 0:
 		return
 	var mm := MultiMesh.new()

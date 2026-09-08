@@ -35,6 +35,9 @@ const ROTATE_SPEED := 120.0
 const FIELD_MIN := 1.2
 const FIELD_MAX_AREA := 60.0
 const FIELD_RATE := 0.4
+## Hueco que se deja a la vista entre la casa de la granja y la tierra del
+## huerto, para que se lean como dos cosas separadas.
+const FIELD_HOUSE_GAP := 0.4
 const STONE_COLOR := Color(0.50, 0.50, 0.52)
 const DEMOLISH_REFUND := 0.5   # fraccion del coste que se devuelve
 
@@ -528,9 +531,8 @@ func _place() -> void:
 	if _pending == &"granja":
 		# segundo paso: delimitar el campo de cultivo
 		_field_mode = true
-		var back_dir := Vector2(-sin(deg_to_rad(_yaw)), -cos(deg_to_rad(_yaw)))
-		_field_start = ground + back_dir * (get_def(&"granja").footprint * 0.5 + 0.6)
 		_field_yaw = _yaw
+		_field_start = ground + _field_back() * _field_offset(d, _field_back())
 		_field_crop = "trigo"
 		_field_farm = rec
 		_field_ghost = Node3D.new()
@@ -541,58 +543,100 @@ func _place() -> void:
 	cancel_placement()
 
 
-# Rectangulo del campo que se esta delimitando: desde la casita (_field_start)
-# hasta donde apunta el raton, en los ejes de la granja. Lo usaban por igual
-# _confirm_field() y _update_field_ghost() con las mismas 17 lineas copiadas.
+# Ejes del huerto: `back` se aleja de la puerta de la casa, `side` es el ancho.
+func _field_back() -> Vector2:
+	return Vector2(-sin(deg_to_rad(_field_yaw)), -cos(deg_to_rad(_field_yaw)))
+
+
+# Cuanto hay que separar el borde sembrado del centro de la casa para que la
+# casa quede fuera del huerto por completo.
+#
+# Antes era un 0.6 fijo sumado a medio footprint, que no daba: la losa de
+# cimentacion sobresale otro 0.25 por lado, y FieldMesh rodea los cultivos de
+# tierra desnuda y redondea a celdas enteras. El resultado era que la casa
+# acababa siempre dentro del huerto, atravesada por la valla.
+func _field_offset(d: BuildingDef, back: Vector2) -> float:
+	# La losa de cimentacion es un cuadrado alineado con los ejes del mundo, no
+	# gira con la casa. Lo que sobresale en la direccion `back` es
+	# media_anchura * (|back.x| + |back.y|): con la granja a 45 grados, la
+	# esquina de la losa esta un 41% mas lejos que su lado. Sin esto el hueco
+	# se comia justo en las diagonales (medido: 0,06 m a 45 grados).
+	var house_reach := (d.footprint + 0.5) * 0.5 * (absf(back.x) + absf(back.y))
+	# FieldMesh rodea los cultivos de tierra desnuda y redondea a celdas
+	# enteras, asi que por cada lado puede crecer hasta MARGIN + CELL/2.
+	var soil_pad := FieldMesh.MARGIN + FieldMesh.CELL * 0.5
+	return house_reach + soil_pad + FIELD_HOUSE_GAP
+
+
+# Zona sembrada que se esta delimitando, EN COORDENADAS DE LA GRANJA: x a lo
+# ancho (eje `side`), y a lo largo (eje `back`), con el origen en _field_start.
+#
+# Antes esto devolvia un rectangulo en coordenadas de mundo, calculado con los
+# ejes girados de la granja y luego aplastado a su caja envolvente. Con la
+# granja girada el campo dejaba de seguir el arrastre: a 30 grados, arrastrar
+# 6x3 m daba un campo de 7x5,5 m.
 func _field_rect(ground: Vector2) -> Rect2:
-	var back := Vector2(-sin(deg_to_rad(_field_yaw)), -cos(deg_to_rad(_field_yaw)))
+	var back := _field_back()
 	var side := Vector2(back.y, -back.x)
 	var diff := ground - _field_start
-	var depth := maxf(FIELD_MIN, maxf(0.0, diff.dot(back)))
+	var depth := maxf(FIELD_MIN, diff.dot(back))
 	var spread := diff.dot(side)
-	var a := _field_start + side * minf(spread, 0.0)
-	var b := _field_start + back * depth + side * maxf(spread, 0.0)
-	var rmin := Vector2(minf(a.x, b.x), minf(a.y, b.y))
-	var rmax := Vector2(maxf(a.x, b.x), maxf(a.y, b.y))
-	return Rect2(rmin, rmax - rmin)
+	var u0 := minf(spread, 0.0)
+	var u1 := maxf(spread, 0.0)
+	if u1 - u0 < FIELD_MIN:
+		var mid := (u0 + u1) * 0.5
+		u0 = mid - FIELD_MIN * 0.5
+		u1 = mid + FIELD_MIN * 0.5
+	return Rect2(Vector2(u0, 0.0), Vector2(u1 - u0, depth))
+
+
+# Centro en el mundo de una zona sembrada dada en coordenadas de la granja.
+func _field_center(rect: Rect2) -> Vector2:
+	var back := _field_back()
+	var side := Vector2(back.y, -back.x)
+	return _field_start 		+ side * (rect.position.x + rect.size.x * 0.5) 		+ back * (rect.position.y + rect.size.y * 0.5)
 
 
 func _confirm_field() -> void:
 	var ground: Vector2 = _cam_rig.screen_to_ground(get_viewport().get_mouse_position())
 	var rect := _field_rect(ground)
-	var rmin := rect.position
-	var rmax := rect.end
-	var w := rmax.x - rmin.x
-	var d := rmax.y - rmin.y
-	if w < FIELD_MIN or d < FIELD_MIN:
-		message_requested.emit("Zona demasiado pequena (min %0.0fx%0.0f m)" % [FIELD_MIN, FIELD_MIN])
-		return
+	var w := rect.size.x
+	var d := rect.size.y
 	if w * d > FIELD_MAX_AREA:
 		message_requested.emit("Zona demasiado grande (max %0.0f m2)" % FIELD_MAX_AREA)
 		return
-	if not _field_terrain_ok(rmin, rmax):
+	if not _field_terrain_ok(rect):
 		message_requested.emit("Los cultivos necesitan llanura")
 		return
+	var center := _field_center(rect)
 	var crop_color: Color = CROP_COLORS[_field_crop]
-	var field := FieldMesh.build(rmin, rmax, crop_color, false)
-	# El campo queda en mundo (no hijo del edificio, porque la casita tiene
-	# yaw y eso distorsionaria el campo). Se guarda la referencia en el
-	# record para que demolish() lo limpie atomicamente con la casita.
+	var field := FieldMesh.build(center, rect.size, deg_to_rad(_field_yaw), crop_color, false)
+	# El campo va suelto en el mundo, no colgado de la casita. Se guarda la
+	# referencia en el record para que demolish() lo libere con ella.
 	add_child(field)
 	_field_farm.field = field
-	# Bounds del campo (con margen para la valla): para que se pueda clicar
-	# en cualquier parte del campo y seleccionar la granja.
-	_field_farm.field_min = Vector2(minf(rmin.x, rmax.x), minf(rmin.y, rmax.y))
-	_field_farm.field_max = Vector2(maxf(rmin.x, rmax.x), maxf(rmin.y, rmax.y))
-	var center := Vector2((rmin.x + rmax.x) * 0.5, (rmin.y + rmax.y) * 0.5)
-	var field_radius := maxf(w, d) + 1.5
-	place_clear_requested.emit(center, field_radius)
+	# Caja envolvente del campo, para poder clicar en cualquier parte de el y
+	# seleccionar la granja. Ahora el campo puede estar girado, asi que se
+	# calcula desde sus cuatro esquinas y no desde el rectangulo en ejes de
+	# granja: con la granja a 45 grados los dos no coinciden.
+	var back := _field_back()
+	var side := Vector2(back.y, -back.x)
+	var fmin := Vector2(INF, INF)
+	var fmax := Vector2(-INF, -INF)
+	for sx: float in [-1.0, 1.0]:
+		for sz: float in [-1.0, 1.0]:
+			var corner: Vector2 = center + side * (w * 0.5 * sx) + back * (d * 0.5 * sz)
+			fmin = Vector2(minf(fmin.x, corner.x), minf(fmin.y, corner.y))
+			fmax = Vector2(maxf(fmax.x, corner.x), maxf(fmax.y, corner.y))
+	_field_farm.field_min = fmin
+	_field_farm.field_max = fmax
+	# Radio que cubre el campo entero incluidas las esquinas.
+	place_clear_requested.emit(center, rect.size.length() * 0.5 + 1.0)
 	_field_farm.amount = clampf(w * d * FIELD_RATE, 1.0, 25.0)
 	_field_farm.crop = _field_crop
 	Economy.changed.emit()
-	var area := int(round(w * d))
 	var crop_name: String = CROP_NAMES[_field_crop]
-	message_requested.emit("Campo de %d m2 sembrado de %s" % [area, crop_name])
+	message_requested.emit("Campo de %d m2 sembrado de %s" % [int(round(w * d)), crop_name])
 	_end_field_mode()
 
 
@@ -626,37 +670,36 @@ func _update_field_ghost() -> void:
 		return
 	var ground: Vector2 = _cam_rig.screen_to_ground(get_viewport().get_mouse_position())
 	var rect := _field_rect(ground)
-	var rmin := rect.position
-	var rmax := rect.end
 	for c in _field_ghost.get_children():
 		_field_ghost.remove_child(c)
 		c.queue_free()
-	var valid := _field_valid(rmin, rmax)
-	var soil_color := Color(0.3, 0.25, 0.15, 0.5) if valid else Color(1.0, 0.3, 0.3, 0.4)
 	var crop_color: Color = CROP_COLORS[_field_crop]
-	crop_color.a = 0.55 if valid else 0.35
-	if not valid:
+	if _field_valid(rect):
+		crop_color.a = 0.55
+	else:
 		crop_color = Color(1.0, 0.3, 0.3, 0.4)
-	_field_ghost.add_child(FieldMesh.build(rmin, rmax, crop_color, true))
+	_field_ghost.add_child(
+		FieldMesh.build(_field_center(rect), rect.size, deg_to_rad(_field_yaw), crop_color, true))
 
 
-func _field_valid(rmin: Vector2, rmax: Vector2) -> bool:
-	var w := rmax.x - rmin.x
-	var d := rmax.y - rmin.y
-	if w < FIELD_MIN or d < FIELD_MIN or w * d > FIELD_MAX_AREA:
+func _field_valid(rect: Rect2) -> bool:
+	if rect.size.x * rect.size.y > FIELD_MAX_AREA:
 		return false
-	return _field_terrain_ok(rmin, rmax)
+	return _field_terrain_ok(rect)
 
 
-func _field_terrain_ok(rmin: Vector2, rmax: Vector2) -> bool:
-	var y := rmin.y
-	while y <= rmax.y:
-		var x := rmin.x
-		while x <= rmax.x:
-			if Terrain.terrain_type(Vector2(x, y)) != "llanura":
+# Muestrea la zona sembrada metro a metro, en los ejes de la granja.
+func _field_terrain_ok(rect: Rect2) -> bool:
+	var back := _field_back()
+	var side := Vector2(back.y, -back.x)
+	var v := rect.position.y
+	while v <= rect.end.y:
+		var u := rect.position.x
+		while u <= rect.end.x:
+			if Terrain.terrain_type(_field_start + side * u + back * v) != "llanura":
 				return false
-			x += 1.0
-		y += 1.0
+			u += 1.0
+		v += 1.0
 	return true
 
 
