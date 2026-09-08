@@ -212,10 +212,10 @@ var _rain_splash: GPUParticles3D
 
 # Referencias a hermanos bajo Main. Se resuelven una sola vez en _ready:
 # si renombras o mueves DayNightCycle, falla aqui con un assert claro.
-@onready var _ground: MeshInstance3D = get_parent().get_node_or_null("Ground") as MeshInstance3D
+@onready var _ground: TerrainMesh = get_parent().get_node_or_null("Ground") as TerrainMesh
 @onready var _veg: Vegetation = get_parent().get_node_or_null("Vegetation") as Vegetation
 @onready var _cam_rig: CameraController3D = get_parent().get_node_or_null("CameraRig") as CameraController3D
-@onready var _terrain_mat: ShaderMaterial = _ground.get_surface_override_material(0) as ShaderMaterial if _ground != null else null
+@onready var _terrain_mat: ShaderMaterial = _ground.terrain_material if _ground != null else null
 
 # --- Herramientas dev ---
 var dev_paused := false

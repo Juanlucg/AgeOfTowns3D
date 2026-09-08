@@ -119,8 +119,78 @@ var _height := 0
 var _px_per_unit := 0.0
 
 
+# --- Cache en disco -------------------------------------------------------
+# Generar el terreno cuesta ~3,4 s de hilo principal (medido con Godot 4.7.2
+# en 768x768), y son 3,4 s de ventana congelada en CADA arranque. El resultado
+# es determinista: solo depende de las constantes de este script. Asi que se
+# vuelca a user:// y los arranques siguientes cuestan ~0,1 s.
+#
+# La clave de la cache incluye un hash de TODAS las constantes del script, de
+# modo que tocar cualquier parametro de generacion (SEED, MOUNT_AMP, el radio
+# de los lagos...) la invalida solo. Si cambias el ALGORITMO sin tocar ninguna
+# constante, sube CACHE_VERSION a mano o borra el fichero.
+const CACHE_VERSION := 1
+const CACHE_PATH := "user://terrain_cache.bin"
+const CACHE_MAGIC := 0x41335443  # "AOT3" (formato del volcado)
+
+
 func _ready() -> void:
+	var t0 := Time.get_ticks_msec()
+	if _load_cache():
+		print_verbose("[Terrain] cache cargada en %d ms" % (Time.get_ticks_msec() - t0))
+		return
 	_generate()
+	print_verbose("[Terrain] generado en %d ms" % (Time.get_ticks_msec() - t0))
+	_save_cache()
+
+
+# Identifica de forma unica la configuracion de generacion actual.
+func _cache_key() -> int:
+	return hash([CACHE_MAGIC, CACHE_VERSION, get_script().get_script_constant_map()])
+
+
+func _load_cache() -> bool:
+	var f := FileAccess.open(CACHE_PATH, FileAccess.READ)
+	if f == null:
+		return false
+	if f.get_64() != _cache_key():
+		return false   # cache de otra configuracion: se regenera y se pisa
+	_width = f.get_32()
+	_height = f.get_32()
+	_px_per_unit = f.get_double()
+	var n := _width * _height
+	if n <= 0:
+		return false
+	_height_px = f.get_var()
+	_wl_px = f.get_var()
+	_forest_px = f.get_var()
+	_water_dist_px = f.get_var()
+	_class_px = f.get_var()
+	# Un volcado truncado (disco lleno, cierre a lo bruto) no debe dejar el
+	# juego con arrays a medias: mejor regenerar.
+	if (_height_px.size() != n or _wl_px.size() != n or _forest_px.size() != n
+			or _water_dist_px.size() != n or _class_px.size() != n):
+		push_warning("[Terrain] cache corrupta o truncada, se regenera")
+		_width = 0
+		_height = 0
+		return false
+	return true
+
+
+func _save_cache() -> void:
+	var f := FileAccess.open(CACHE_PATH, FileAccess.WRITE)
+	if f == null:
+		push_warning("[Terrain] no se pudo escribir la cache en %s" % CACHE_PATH)
+		return
+	f.store_64(_cache_key())
+	f.store_32(_width)
+	f.store_32(_height)
+	f.store_double(_px_per_unit)
+	f.store_var(_height_px)
+	f.store_var(_wl_px)
+	f.store_var(_forest_px)
+	f.store_var(_water_dist_px)
+	f.store_var(_class_px)
 
 
 func _generate() -> void:
