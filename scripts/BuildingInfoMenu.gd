@@ -99,6 +99,18 @@ func hide_menu() -> void:
 		_catcher.visible = false
 
 
+# Catch-all: loggea cualquier click mientras el menu este visible para
+# diagnosticar si el click llega al menu, al button, o se pierde.
+func _input(event: InputEvent) -> void:
+	if not visible:
+		return
+	if event is InputEventMouseButton and event.pressed \
+			and event.button_index == MOUSE_BUTTON_LEFT:
+		print("[INFO] click event at screen=", event.position,
+			" menu_rect=", Rect2(global_position, size),
+			" inside_menu=", Rect2(global_position, size).has_point(event.position))
+
+
 func has_record() -> bool:
 	return _record != null
 

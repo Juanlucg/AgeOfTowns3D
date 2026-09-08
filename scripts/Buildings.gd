@@ -214,8 +214,6 @@ func toggle_select(rec: BuildingRecord) -> void:
 		deselect()
 		return
 	_selected = rec
-	# Orienta el edificio para que su cara (puerta) mire a la camara.
-	_face_camera(rec)
 	_update_selection_marker()
 	var screen := Vector2.ZERO
 	if rec != null and rec.node != null and is_instance_valid(rec.node):
@@ -225,20 +223,32 @@ func toggle_select(rec: BuildingRecord) -> void:
 	building_focus_changed.emit(_selected, screen)
 
 
-# Rota el edificio para que su +Z local (donde esta la puerta) apunte
-# hacia la camara. Asi el jugador ve la fachada al clicar.
-func _face_camera(rec: BuildingRecord) -> void:
-	if rec == null or rec.node == null or _cam_rig == null:
+# Rota la yaw actual para que la cara del edificio (su +Z local, donde
+# esta la puerta) apunte a la camara. Se llama al COLOCAR el edificio
+# (no al clicar uno existente), de modo que el jugador siempre ve la
+# fachada del edificio que acaba de poner. Tambien se aplica al fantasma
+# durante la colocacion para que el preview muestre la orientacion final.
+func _face_camera_now() -> void:
+	if _cam_rig == null:
 		return
-	var build_pos := Vector3(rec.pos.x, 0, rec.pos.y)
 	var cam_pos := _cam_rig.global_position
-	var dir := cam_pos - build_pos
+	# El fantasma (si esta activo) rota con la yaw actual.
+	if _ghost != null:
+		_face_ghost_to_camera(cam_pos)
+	# Yaw por defecto al colocar: hacia la camara.
+	if cam_pos.length_squared() > 0.0001:
+		var dir := Vector3(cam_pos.x, 0, cam_pos.z).normalized()
+		_yaw = atan2(dir.x, dir.z)
+
+
+func _face_ghost_to_camera(cam_pos: Vector3) -> void:
+	var ghost_pos := Vector3(_ghost.position.x, 0, _ghost.position.z)
+	var dir := cam_pos - ghost_pos
 	if dir.length_squared() < 0.0001:
 		return
 	dir.y = 0
 	dir = dir.normalized()
-	rec.yaw = atan2(dir.x, dir.z)
-	rec.node.rotation = Vector3(0.0, rec.yaw, 0.0)
+	_ghost.rotation = Vector3(0.0, atan2(dir.x, dir.z), 0.0)
 
 
 func deselect() -> void:
@@ -322,8 +332,15 @@ func select(id_str: String) -> void:
 		return
 	cancel_placement()
 	_pending = id
+	# Orientacion inicial: la cara del edificio mira a la camara.
 	_yaw = 0.0
+	if _cam_rig != null:
+		var cam_pos := _cam_rig.global_position
+		if cam_pos.length_squared() > 0.0001:
+			var dir := Vector3(cam_pos.x, 0, cam_pos.z).normalized()
+			_yaw = atan2(dir.x, dir.z)
 	_ghost = Node3D.new()
+	_ghost.rotation = Vector3(0.0, _yaw, 0.0)
 	_ghost_building = BuildingMeshes.build(id, BuildingMeshes.ghost_mat(GHOST_OK))
 	_ghost.add_child(_ghost_building)
 	_ghost_foundation = Node3D.new()
