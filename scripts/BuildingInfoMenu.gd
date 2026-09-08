@@ -1,18 +1,16 @@
 extends PanelContainer
 class_name BuildingInfoMenu
-## Popup contextual que aparece al hacer clic en un edificio colocado.
-## Inspirado en menus de city-builders (Garrison, Banished...):
-## header con icono + nombre + descripcion, barra de capacidad,
-## lista de trabajadores con mood, y barra de acciones inferior.
+## Popup contextual al hacer clic en un edificio colocado. Inspirado en
+## city-builders: header (icono + nombre), descripcion, capacidad,
+## trabajadores, storage global y barra de acciones (Demoler).
+##
+## Reconstruccion atomica: un unico VBox `_content` se reemplaza entero
+## cada vez, evitando el solapamiento de paneles que se daba al
+## queue_free() los hijos sueltos.
 
 const _BIOME_NAMES := {0: "llanura", 1: "bosque", 2: "montaña"}
-const _RESOURCE_COLORS := {
-	"madera": Color(0.62, 0.42, 0.22),
-	"piedra": Color(0.55, 0.55, 0.58),
-	"comida": Color(0.55, 0.72, 0.30),
-}
 
-
+var _content: VBoxContainer = null
 var _record: BuildingRecord = null
 var _buildings: Buildings = null
 
@@ -21,7 +19,7 @@ func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	visible = false
 	z_index = 100
-	custom_minimum_size = Vector2(280, 0)
+	custom_minimum_size = Vector2(320, 0)
 
 
 func bind(buildings: Buildings) -> void:
@@ -30,23 +28,66 @@ func bind(buildings: Buildings) -> void:
 
 func show_for(record: BuildingRecord, at: Vector2) -> void:
 	_record = record
-	_clear()
+	# Reemplazo atomico: quito el content viejo y meto el nuevo sin
+	# solapamiento (queue_free es diferido, free inmediato).
+	if _content != null and is_instance_valid(_content):
+		_content.queue_free()
+	_content = VBoxContainer.new()
+	_content.add_theme_constant_override("separation", 8)
+	add_child(_content)
+
 	var def := _buildings.get_def(record.type)
 	if def == null:
 		hide_menu()
 		return
 
-	# --- Header: icono + nombre + cerrar ---
-	var header := HBoxContainer.new()
-	header.add_theme_constant_override("separation", 10)
-	add_child(header)
+	_build_header(_content, def)
+	if def.description != "":
+		_content.add_child(HSeparator.new())
+		_build_description(_content, def.description)
+	if def.capacity > 0:
+		_content.add_child(HSeparator.new())
+		_build_capacity(_content, def.capacity, def.capacity_resource)
+	if def.worker_count > 0:
+		_content.add_child(HSeparator.new())
+		_build_workers(_content, def)
+	_content.add_child(HSeparator.new())
+	_build_storage_row(_content)
+	_content.add_child(HSeparator.new())
+	_build_action_bar(_content)
+
+	visible = true
+	# Espera al layout y posiciona.
+	await get_tree().process_frame
+	var vp := get_viewport_rect().size
+	var pos := at + Vector2(20, -size.y * 0.5)
+	pos.x = clampf(pos.x, 8, maxf(8.0, vp.x - size.x - 8.0))
+	pos.y = clampf(pos.y, 8, maxf(8.0, vp.y - size.y - 8.0))
+	position = pos
+
+
+func hide_menu() -> void:
+	_record = null
+	visible = false
+
+
+func has_record() -> bool:
+	return _record != null
+
+
+# --- builders internos ---
+
+func _build_header(parent: VBoxContainer, def: BuildingDef) -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 10)
+	parent.add_child(row)
 	var icon := ColorRect.new()
 	icon.custom_minimum_size = Vector2(56, 56)
 	icon.color = def.color
-	header.add_child(icon)
+	row.add_child(icon)
 	var title_box := VBoxContainer.new()
 	title_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	header.add_child(title_box)
+	row.add_child(title_box)
 	var title := Label.new()
 	title.text = def.display_name
 	title.add_theme_font_size_override("font_size", 18)
@@ -63,63 +104,23 @@ func show_for(record: BuildingRecord, at: Vector2) -> void:
 	close_btn.custom_minimum_size = Vector2(28, 28)
 	close_btn.add_theme_font_size_override("font_size", 12)
 	close_btn.pressed.connect(hide_menu)
-	header.add_child(close_btn)
-
-	# --- Descripcion ---
-	if def.description != "":
-		var sep := HSeparator.new()
-		add_child(sep)
-		var desc := Label.new()
-		desc.text = def.description
-		desc.add_theme_font_size_override("font_size", 12)
-		desc.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
-		desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		desc.custom_minimum_size = Vector2(260, 0)
-		add_child(desc)
-
-	# --- Capacidad (e.g. granero 300/300 de comida) ---
-	if def.capacity > 0:
-		add_child(HSeparator.new())
-		_add_capacity(def.capacity, def.capacity_resource)
-
-	# --- Trabajadores ---
-	if def.worker_count > 0:
-		add_child(HSeparator.new())
-		_add_workers(def)
-
-	# --- Storage global (resumen rapido) ---
-	add_child(HSeparator.new())
-	_add_storage_row()
-
-	# --- Barra de acciones inferior ---
-	add_child(HSeparator.new())
-	_add_action_bar()
-
-	# Posicion: a la derecha del edificio, dentro del viewport.
-	var vp := get_viewport_rect().size
-	await get_tree().process_frame  # dejar que el layout calcule size
-	var pos := at + Vector2(20, -size.y * 0.5)
-	pos.x = clampf(pos.x, 8, vp.x - size.x - 8)
-	pos.y = clampf(pos.y, 8, vp.y - size.y - 8)
-	position = pos
-	visible = true
+	row.add_child(close_btn)
 
 
-func hide_menu() -> void:
-	_record = null
-	visible = false
+func _build_description(parent: VBoxContainer, text: String) -> void:
+	var desc := Label.new()
+	desc.text = text
+	desc.add_theme_font_size_override("font_size", 12)
+	desc.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
+	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	desc.custom_minimum_size = Vector2(280, 0)
+	parent.add_child(desc)
 
 
-func has_record() -> bool:
-	return _record != null
-
-
-# --- builders internos ---
-
-func _add_capacity(max: int, resource: StringName) -> void:
+func _build_capacity(parent: VBoxContainer, max: int, resource: StringName) -> void:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 6)
-	add_child(row)
+	parent.add_child(row)
 	var label := Label.new()
 	label.text = "%s:" % String(resource).capitalize()
 	label.add_theme_font_size_override("font_size", 12)
@@ -139,16 +140,16 @@ func _add_capacity(max: int, resource: StringName) -> void:
 	row.add_child(value_label)
 
 
-func _add_workers(def: BuildingDef) -> void:
+func _build_workers(parent: VBoxContainer, def: BuildingDef) -> void:
 	var title := Label.new()
 	title.text = "Trabajadores"
 	title.add_theme_font_size_override("font_size", 12)
 	title.add_theme_color_override("font_color", Color(1, 1, 1, 0.65))
-	add_child(title)
+	parent.add_child(title)
 	for i in def.worker_count:
 		var slot := HBoxContainer.new()
 		slot.add_theme_constant_override("separation", 6)
-		add_child(slot)
+		parent.add_child(slot)
 		var avatar := ColorRect.new()
 		avatar.custom_minimum_size = Vector2(20, 20)
 		avatar.color = def.color
@@ -164,15 +165,15 @@ func _add_workers(def: BuildingDef) -> void:
 		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		slot.add_child(lbl)
 		var mood := Label.new()
-		mood.text = "😊"
+		mood.text = "OK"
 		mood.add_theme_font_size_override("font_size", 12)
 		slot.add_child(mood)
 
 
-func _add_storage_row() -> void:
+func _build_storage_row(parent: VBoxContainer) -> void:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 12)
-	add_child(row)
+	parent.add_child(row)
 	for k in Economy.RESOURCE_NAMES:
 		var cell := HBoxContainer.new()
 		cell.add_theme_constant_override("separation", 4)
@@ -190,20 +191,19 @@ func _add_storage_row() -> void:
 		cell.add_child(lbl)
 
 
-func _add_action_bar() -> void:
+func _build_action_bar(parent: VBoxContainer) -> void:
 	var bar := HBoxContainer.new()
 	bar.add_theme_constant_override("separation", 6)
-	bar.alignment = BoxContainer.ALIGNMENT_CENTER
-	add_child(bar)
+	parent.add_child(bar)
 
 	var spacer_l := Control.new()
 	spacer_l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	bar.add_child(spacer_l)
 
-	# Demoler (boton principal, color rojo)
 	var demolish := Button.new()
-	demolish.text = "✕ Demoler (50% reembolso)"
+	demolish.text = "X Demoler (50% reembolso)"
 	demolish.add_theme_font_size_override("font_size", 12)
+	demolish.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var red := StyleBoxFlat.new()
 	red.bg_color = Color(0.55, 0.18, 0.18, 0.85)
 	red.set_corner_radius_all(4)
@@ -220,8 +220,6 @@ func _add_action_bar() -> void:
 	bar.add_child(spacer_r)
 
 
-# --- handlers ---
-
 func _on_demolish_pressed() -> void:
 	if _record == null or _buildings == null:
 		return
@@ -234,8 +232,3 @@ func _fmt(n: float) -> String:
 	if n == int(n):
 		return str(int(n))
 	return "%.1f" % n
-
-
-func _clear() -> void:
-	for c in get_children():
-		c.queue_free()

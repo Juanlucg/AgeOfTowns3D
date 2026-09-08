@@ -474,7 +474,7 @@ func _place() -> void:
 		_ghost.visible = false
 		message_requested.emit("Elige la zona con el raton (clic) y el cultivo: 1 Trigo, 2 Zanahorias, 3 Bayas")
 		return
-	deselect()
+	cancel_placement()
 
 
 func _confirm_field() -> void:
