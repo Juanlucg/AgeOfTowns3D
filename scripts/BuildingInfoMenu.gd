@@ -60,6 +60,12 @@ func show_for(record: BuildingRecord, at: Vector2) -> void:
 		_content.queue_free()
 	_content = VBoxContainer.new()
 	_content.add_theme_constant_override("separation", 8)
+	# Expandir el VBox para que llene todo el PanelContainer. Sin esto, el
+	# VBox se queda en su tamano minimo y queda un hueco entre el final del
+	# contenido y el borde inferior del panel (donde caian los clics).
+	_content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_content.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_content.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(_content)
 
 	var def := _buildings.get_def(record.type)
@@ -237,8 +243,12 @@ func _build_action_bar(parent: VBoxContainer) -> void:
 	demolish.text = "X  Demoler (50% reembolso)"
 	demolish.add_theme_font_size_override("font_size", 14)
 	demolish.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	demolish.size_flags_vertical = Control.SIZE_FILL
 	demolish.custom_minimum_size = Vector2(0, 44)
 	demolish.mouse_filter = Control.MOUSE_FILTER_STOP
+	# gui_input manual: mas fiable que la senal pressed (que depende del
+	# timing press+release dentro del rect del boton).
+	demolish.gui_input.connect(_on_demolish_gui_input)
 	var red := StyleBoxFlat.new()
 	red.bg_color = Color(0.55, 0.18, 0.18, 1.0)
 	red.set_corner_radius_all(6)
@@ -250,8 +260,14 @@ func _build_action_bar(parent: VBoxContainer) -> void:
 	var red_hover := red.duplicate()
 	red_hover.bg_color = Color(0.7, 0.22, 0.22, 1.0)
 	demolish.add_theme_stylebox_override("hover", red_hover)
-	demolish.pressed.connect(_on_demolish_pressed)
 	parent.add_child(demolish)
+
+
+func _on_demolish_gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.pressed \
+			and event.button_index == MOUSE_BUTTON_LEFT:
+		print("[INFO] Demoler gui_input click")
+		_on_demolish_pressed()
 
 
 func _on_demolish_pressed() -> void:
