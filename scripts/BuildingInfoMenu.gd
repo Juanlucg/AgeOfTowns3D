@@ -99,12 +99,8 @@ func _build_header(parent: VBoxContainer, def: BuildingDef) -> void:
 		sub.add_theme_font_size_override("font_size", 11)
 		sub.add_theme_color_override("font_color", Color(1, 1, 1, 0.65))
 		title_box.add_child(sub)
-	var close_btn := Button.new()
-	close_btn.text = "X"
-	close_btn.custom_minimum_size = Vector2(28, 28)
-	close_btn.add_theme_font_size_override("font_size", 12)
-	close_btn.pressed.connect(hide_menu)
-	row.add_child(close_btn)
+	# Sin boton X en el header (cerraba el menu y confundia con Demoler).
+	# El menu se cierra con ESC o haciendo clic fuera.
 
 
 func _build_description(parent: VBoxContainer, text: String) -> void:
@@ -221,11 +217,14 @@ func _build_action_bar(parent: VBoxContainer) -> void:
 
 
 func _on_demolish_pressed() -> void:
+	print("[BuildingInfoMenu] _on_demolish_pressed: record=", _record, " buildings=", _buildings)
 	if _record == null or _buildings == null:
+		print("[BuildingInfoMenu] abort: null check failed")
 		return
 	var rec := _record
 	hide_menu()
 	_buildings.demolish(rec)
+	print("[BuildingInfoMenu] demolish called for ", rec)
 
 
 func _fmt(n: float) -> String:

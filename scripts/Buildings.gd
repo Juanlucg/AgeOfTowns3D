@@ -239,10 +239,12 @@ func demolish_selected() -> void:
 
 
 func demolish(rec: BuildingRecord) -> void:
+	print("[Buildings] demolish: rec=", rec, " type=", rec.type if rec != null else "null")
 	if rec == null:
 		return
 	# Reembolso antes de cualquier cleanup para que el HUD lo vea.
 	var d := get_def(rec.type)
+	print("[Buildings] def=", d)
 	if d != null:
 		for k in d.cost:
 			Economy.amounts[k] = Economy.amounts[k] + d.cost[k] * DEMOLISH_REFUND
@@ -254,6 +256,7 @@ func demolish(rec: BuildingRecord) -> void:
 	# demas consultas ya no lo vean.
 	_placed.erase(rec)
 	# Libera los nodos visuales (casita y, si es granja, el campo).
+	print("[Buildings] node=", rec.node, " valid=", is_instance_valid(rec.node) if rec.node != null else false)
 	if rec.node != null and is_instance_valid(rec.node):
 		rec.node.queue_free()
 	if rec.field != null and is_instance_valid(rec.field):
@@ -262,6 +265,7 @@ func demolish(rec: BuildingRecord) -> void:
 	if d != null:
 		building_demolished.emit(rec.type, rec.pos)
 		message_requested.emit("%s demolido (reembolso 50%%)" % d.display_name)
+	print("[Buildings] demolish done")
 
 
 func _update_selection_marker() -> void:
