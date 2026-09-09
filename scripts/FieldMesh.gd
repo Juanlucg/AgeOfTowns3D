@@ -210,30 +210,37 @@ static func _add_fence(node: Node3D, hx: float, hz: float, h: Callable) -> void:
 
 
 # Plantas en grid via MultiMesh (una sola draw call para todo el campo).
+#
+# Los transforms se ponen con set_instance_transform, no rellenando
+# MultiMesh.buffer a mano. Antes se hacia a mano con doce floats por planta en
+# orden [3x3 identidad, x, y, z], que no es el formato que espera Godot: las
+# plantas acababan todas amontonadas en el mismo punto y al nivel del mar, o
+# sea enterradas bajo el terreno. Por eso los huertos salian pelados.
+#
+# Es una llamada por planta en vez de una sola asignacion, pero un huerto son
+# como mucho un par de cientos (FIELD_MAX_AREA / FIELD_SPACING^2) y asi el
+# formato lo pone Godot, no nosotros. Es lo que ya hacen Vegetation y Rocks.
 static func _add_crops(node: Node3D, size: Vector2, crop_color: Color, ghost: bool, h: Callable) -> void:
 	var plant := BoxMesh.new()
 	plant.size = Vector3(0.12, 0.24, 0.12)
-	var transforms := PackedFloat32Array()
+	var spots: Array[Transform3D] = []
 	var hx: float = size.x * 0.5
 	var hz: float = size.y * 0.5
 	var pz: float = -hz + FIELD_SPACING * 0.5
 	while pz <= hz:
 		var px: float = -hx + FIELD_SPACING * 0.5
 		while px <= hx:
-			transforms.append_array([
-				1.0, 0.0, 0.0, 0.0,
-				1.0, 0.0, 0.0, 0.0,
-				1.0, px, h.call(px, pz) + 0.12, pz,
-			])
+			spots.append(Transform3D(Basis.IDENTITY, Vector3(px, h.call(px, pz) + 0.12, pz)))
 			px += FIELD_SPACING
 		pz += FIELD_SPACING
-	if transforms.size() == 0:
+	if spots.is_empty():
 		return
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.mesh = plant
-	mm.instance_count = transforms.size() / 12
-	mm.buffer = transforms
+	mm.instance_count = spots.size()
+	for i in spots.size():
+		mm.set_instance_transform(i, spots[i])
 	var mmi := MultiMeshInstance3D.new()
 	mmi.multimesh = mm
 	mmi.material_override = _ghost_mat(crop_color) if ghost else _mat(crop_color)
