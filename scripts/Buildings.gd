@@ -237,6 +237,13 @@ func toggle_select(rec: BuildingRecord) -> void:
 	building_focus_changed.emit(_selected, screen)
 
 
+# OJO: a dia de hoy no la llama nadie, ni a ella ni a _face_ghost_to_camera().
+# Ademas la direccion se mide desde el ORIGEN DEL MUNDO hasta la camara, no
+# desde el edificio: para una casa en (150,150) el angulo sale practicamente
+# igual la pongas donde la pongas. Si quieres revivir la funcion, hay que
+# medir cam_pos - posicion_del_edificio, que es lo que si hace bien
+# _face_ghost_to_camera().
+#
 # Rota la yaw actual para que la cara del edificio (su +Z local, donde
 # esta la puerta) apunte a la camara. Se llama al COLOCAR el edificio
 # (no al clicar uno existente), de modo que el jugador siempre ve la
@@ -252,7 +259,7 @@ func _face_camera_now() -> void:
 	# Yaw por defecto al colocar: hacia la camara.
 	if cam_pos.length_squared() > 0.0001:
 		var dir := Vector3(cam_pos.x, 0, cam_pos.z).normalized()
-		_yaw = atan2(dir.x, dir.z)
+		_yaw = rad_to_deg(atan2(dir.x, dir.z))
 
 
 func _face_ghost_to_camera(cam_pos: Vector3) -> void:
@@ -262,7 +269,11 @@ func _face_ghost_to_camera(cam_pos: Vector3) -> void:
 		return
 	dir.y = 0
 	dir = dir.normalized()
-	_ghost.rotation = Vector3(0.0, atan2(dir.x, dir.z), 0.0)
+	# Se escribe en _yaw (grados) en vez de girar _ghost directamente: la raiz
+	# del fantasma no debe rotar, porque de ella cuelga la cimentacion, que se
+	# muestrea sobre una rejilla alineada con los ejes del mundo. _process se
+	# encarga de aplicar la yaw al cuerpo.
+	_yaw = rad_to_deg(atan2(dir.x, dir.z))
 
 
 func deselect() -> void:
@@ -352,7 +363,11 @@ func select(id_str: String) -> void:
 		var cam_pos := _cam_rig.global_position
 		if cam_pos.length_squared() > 0.0001:
 			var dir := Vector3(cam_pos.x, 0, cam_pos.z).normalized()
-			_yaw = atan2(dir.x, dir.z)
+			# atan2 devuelve RADIANES y _yaw esta en grados en todo el fichero
+			# (ROTATE_SPEED son 120 grados/s, y se usa deg_to_rad(_yaw) al
+			# aplicarla). Sin convertir, el giro maximo posible eran 3,14
+			# grados: por eso el edificio no llegaba a mirar a la camara.
+			_yaw = rad_to_deg(atan2(dir.x, dir.z))
 	_ghost_last_ground = Vector2(INF, INF)
 	_ghost = Node3D.new()
 	_ghost_building = BuildingMeshes.build(id, _ghost_mat_ok)
