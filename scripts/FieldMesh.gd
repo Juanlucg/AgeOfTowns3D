@@ -20,9 +20,21 @@ class_name FieldMesh
 ## coordenada Y local.
 
 const CELL := 0.5
-## Franja de tierra desnuda alrededor de los cultivos.
-const MARGIN := 0.5
-const FIELD_SPACING := 0.55
+## Franja de tierra desnuda alrededor de los cultivos. Con 0.5 sobraba casi un
+## metro de tierra entre la ultima planta y la valla.
+const MARGIN := 0.3
+## Separacion entre surcos y entre plantas dentro del surco. Mas junto dentro
+## del surco que entre surcos: es lo que hace que se lean como filas sembradas
+## y no como una cuadricula.
+const ROW_SPACING := 0.42
+const PLANT_SPACING := 0.26
+## Tamano de una planta madura.
+const PLANT_HEIGHT := 0.34
+const PLANT_WIDTH := 0.10
+## Semilla fija para la variacion de altura y giro de cada planta: si dependiera
+## del azar, la vista previa cambiaria de aspecto en cada frame mientras
+## arrastras el raton.
+const CROP_SEED := 20260909
 const SOIL_DEPTH := 0.5
 const SOIL_RAISE := 0.01
 const FENCE_SPACING := 1.0
@@ -218,33 +230,52 @@ static func _add_fence(node: Node3D, hx: float, hz: float, h: Callable) -> void:
 # sea enterradas bajo el terreno. Por eso los huertos salian pelados.
 #
 # Es una llamada por planta en vez de una sola asignacion, pero un huerto son
-# como mucho un par de cientos (FIELD_MAX_AREA / FIELD_SPACING^2) y asi el
+# como mucho unos cientos (FIELD_MAX_AREA / (ROW_SPACING * PLANT_SPACING)) y asi el
 # formato lo pone Godot, no nosotros. Es lo que ya hacen Vegetation y Rocks.
 static func _add_crops(node: Node3D, size: Vector2, crop_color: Color, ghost: bool, h: Callable) -> void:
 	var plant := BoxMesh.new()
-	plant.size = Vector3(0.12, 0.24, 0.12)
-	var spots: Array[Transform3D] = []
+	plant.size = Vector3(PLANT_WIDTH, PLANT_HEIGHT, PLANT_WIDTH)
+	var bases := PackedVector3Array()
+	var height_var := PackedFloat32Array()
+	var yaws := PackedFloat32Array()
+	var rng := RandomNumberGenerator.new()
+	rng.seed = CROP_SEED
 	var hx: float = size.x * 0.5
 	var hz: float = size.y * 0.5
-	var pz: float = -hz + FIELD_SPACING * 0.5
+	var pz: float = -hz + ROW_SPACING * 0.5
 	while pz <= hz:
-		var px: float = -hx + FIELD_SPACING * 0.5
+		var px: float = -hx + PLANT_SPACING * 0.5
 		while px <= hx:
-			spots.append(Transform3D(Basis.IDENTITY, Vector3(px, h.call(px, pz) + 0.12, pz)))
-			px += FIELD_SPACING
-		pz += FIELD_SPACING
-	if spots.is_empty():
+			bases.append(Vector3(px, h.call(px, pz) + SOIL_RAISE, pz))
+			height_var.append(rng.randf_range(0.82, 1.18))
+			yaws.append(rng.randf_range(0.0, TAU))
+			px += PLANT_SPACING
+		pz += ROW_SPACING
+	if bases.is_empty():
 		return
+
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.mesh = plant
-	mm.instance_count = spots.size()
-	for i in spots.size():
-		mm.set_instance_transform(i, spots[i])
-	var mmi := MultiMeshInstance3D.new()
-	mmi.multimesh = mm
-	mmi.material_override = _ghost_mat(crop_color) if ghost else _mat(crop_color)
-	node.add_child(mmi)
+	mm.instance_count = bases.size()
+
+	if ghost:
+		# La vista previa no crece: ensena el campo ya sembrado.
+		for i in bases.size():
+			var b: Vector3 = bases[i]
+			mm.set_instance_transform(i, Transform3D(
+				Basis(Vector3.UP, yaws[i]),
+				Vector3(b.x, b.y + PLANT_HEIGHT * 0.5, b.z)))
+		var preview := MultiMeshInstance3D.new()
+		preview.multimesh = mm
+		preview.material_override = _ghost_mat(crop_color)
+		node.add_child(preview)
+		return
+
+	var crops := CropField.new()
+	crops.multimesh = mm
+	node.add_child(crops)
+	crops.setup(PLANT_HEIGHT, bases, height_var, yaws, crop_color)
 
 
 static func _part(m: Mesh, mat: Material, pos: Vector3) -> MeshInstance3D:
