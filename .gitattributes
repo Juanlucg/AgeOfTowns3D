@@ -1,0 +1,4 @@
+# Forzar LF en el repositorio (Windows escribe CRLF, Godot normalmente
+# guarda LF). Sin esto, patches y merges disparan falsos positivos de
+# "toda la linea cambio" por el normalizador de git.
+* text=auto eol=lf

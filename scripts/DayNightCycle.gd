@@ -13,16 +13,11 @@ signal time_changed(day: int, season: int, hour: float, weather_name: String)
 @export var cycle_duration := 600.0   # segundos por dia completo (10 min)
 @export var start_time := 0.42        # hora inicial (0.0 = medianoche, 0.5 = mediodia)
 @export var days_per_season := 2      # dias (ciclos dia/noche) por estacion
-## Clima forzado al arrancar la partida. "auto" = lo deciden las estaciones.
-##
-## OJO: mientras esto no sea "auto", las tablas RAIN_BY_SEASON y
-## SNOW_BY_SEASON no se usan nunca y el clima no cambia con la estacion.
-## Antes este valor vivia dentro de _dev_weather_override (la variable del
-## panel de desarrollo) fijado a "despejado", asi que el sistema de clima
-## estacional estaba apagado de fabrica y solo se encendia poniendo "Auto"
-## a mano en el panel dev. Se mantiene el comportamiento anterior por
-## defecto; ponlo en "auto" para que el clima siga a las estaciones.
-@export_enum("auto", "despejado", "lluvia", "nieve") var initial_weather: String = "despejado"
+## Clima aplicado al inicio de la partida durante `weather_grace_days`.
+## "auto" = clima estacional desde el primer dia. "despejado"/"lluvia"/"nieve"
+## = forzado durante los dias de gracia; despues pasa a auto.
+@export_enum("auto", "despejado", "lluvia", "nieve") var initial_weather: String = "auto"
+@export var weather_grace_days := 1   # dias con clima inicial fijo antes de pasar a auto
 
 const SEASONS := ["Primavera", "Verano", "Otoño", "Invierno"]
 
@@ -67,10 +62,14 @@ const GROUND_TOP_BY_SEASON := [
 	Color(0.52, 0.54, 0.58),
 ]
 const AMBIENT_DAY_BY_SEASON := [
-	Color(0.40, 0.48, 0.65),
-	Color.WHITE,
-	Color(0.55, 0.50, 0.45),
-	Color(0.50, 0.56, 0.65),
+	# Primavera (azul-fresco) - subido hacia neutro/cálido.
+	Color(0.55, 0.58, 0.60),
+	# Verano (cálido neutro).
+	Color(0.85, 0.78, 0.65),
+	# Otoño (cálido rojizo, luz dorada).
+	Color(0.85, 0.65, 0.45),
+	# Invierno (azul-frío más saturado, para más contraste con el calor de casa).
+	Color(0.50, 0.58, 0.72),
 ]
 const CLOUD_AMOUNT_BY_SEASON := [0.6, 0.45, 0.7, 0.85]
 const CLOUD_COLOR_BY_SEASON := [
@@ -226,11 +225,19 @@ var _dev_weather_override := ""  # ""=auto, "despejado"/"lluvia"/"nieve"
 var _snow_cover := 0.0  # 0..0.55 fina capa
 var _wet_amount := 0.0
 var _rain_ripple := 0.0
+var _weather_grace_left := 0  # dias restantes con initial_weather forzado
 
 
 func _ready() -> void:
 	_time = start_time
-	_dev_weather_override = "" if initial_weather == "auto" else initial_weather
+	# Dias de gracia: los primeros dias se respeta initial_weather aunque
+	# no sea "auto"; al acabarse, pasamos a modo estacional real.
+	if initial_weather == "auto":
+		_weather_grace_left = 0
+		_dev_weather_override = ""
+	else:
+		_weather_grace_left = weather_grace_days
+		_dev_weather_override = initial_weather
 
 	for child in get_parent().get_children():
 		if child is DirectionalLight3D:
@@ -256,6 +263,10 @@ func _ready() -> void:
 	_env.background_mode = Environment.BG_SKY
 	_env.sky = sky_resource
 	_env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
+	# Antes: el cielo ponia el 100% de la luz ambiental, ignorando
+	# ambient_light_color. Bajamos la contribucion del cielo al 45% para
+	# que el color por estacion (AMBIENT_DAY_BY_SEASON) tenga efecto.
+	_env.ambient_light_sky_contribution = 0.45
 	_env.ambient_light_energy = DAY_AMBIENT
 	_env.ambient_light_color = Color.WHITE
 	_env.fog_enabled = true
@@ -430,6 +441,11 @@ func _process(delta: float) -> void:
 		if _time < prev:
 			_day += 1
 			day_changed.emit(_day)
+			# Cuando termina el periodo de gracia, el clima pasa a auto.
+			if _weather_grace_left > 0:
+				_weather_grace_left -= 1
+				if _weather_grace_left == 0 and _dev_weather_override != "":
+					_dev_weather_override = ""
 	_apply_lighting()
 	_apply_weather()
 	_update_ground_weather(delta)
@@ -463,7 +479,10 @@ func get_season_name() -> String:
 
 # Progreso dentro de la estacion actual: 0 al empezar, 1 justo antes de cambiar.
 func get_season_progress() -> float:
-	return fmod(float(_day) / float(days_per_season), 1.0)
+	# Progreso 0..1 dentro de la estacion actual. Sumando _time (0..1, fraccion
+	# del dia), interpolamos tambien dentro del dia: pasar de 0 a 1 toma
+	# days_per_season dias + 1 dia completo, no solo a saltos cada days_per_season.
+	return (fmod(float(_day), float(days_per_season)) + _time) / float(days_per_season)
 
 
 func get_weather_name() -> String:

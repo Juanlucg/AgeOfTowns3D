@@ -358,15 +358,18 @@ func select(id_str: String) -> void:
 	cancel_placement()
 	_pending = id
 	# Orientacion inicial: la cara del edificio mira a la camara.
+	# Se calcula DESDE el origen del mundo + posicion del mouse: asi la
+	# fachada queda visible aunque el cursor este a un lado del edificio.
 	_yaw = 0.0
 	if _cam_rig != null:
+		var mouse_ground := _cam_rig.screen_to_ground(get_viewport().get_mouse_position())
+		var face_pos := Vector3(mouse_ground.x, 0, mouse_ground.y)
 		var cam_pos := _cam_rig.global_position
-		if cam_pos.length_squared() > 0.0001:
-			var dir := Vector3(cam_pos.x, 0, cam_pos.z).normalized()
-			# atan2 devuelve RADIANES y _yaw esta en grados en todo el fichero
-			# (ROTATE_SPEED son 120 grados/s, y se usa deg_to_rad(_yaw) al
-			# aplicarla). Sin convertir, el giro maximo posible eran 3,14
-			# grados: por eso el edificio no llegaba a mirar a la camara.
+		var dir := cam_pos - Vector3(face_pos.x, 0, face_pos.z)
+		if dir.length_squared() > 0.0001:
+			dir.y = 0
+			dir = dir.normalized()
+			# atan2 devuelve RADIANES y _yaw esta en grados en todo el fichero.
 			_yaw = rad_to_deg(atan2(dir.x, dir.z))
 	_ghost_last_ground = Vector2(INF, INF)
 	_ghost = Node3D.new()
