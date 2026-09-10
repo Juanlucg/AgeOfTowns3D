@@ -111,84 +111,19 @@ func _ready() -> void:
 
 # Crea los BuildingDef por codigo (migrar a .tres en el futuro).
 func _register_defs() -> void:
-	_register(_make_granero())
-	_register(_make_granja())
-	_register(_make_aserradero())
-	_register(_make_cantera())
+	# Los BuildingDef se cargan desde .tres en res://resources/buildings/.
+	# Editables desde el inspector sin tocar codigo: ajustar un coste,
+	# anadir un edificio o tunear produccion ya no requiere compilar.
+	_register(preload("res://resources/buildings/granero.tres"))
+	_register(preload("res://resources/buildings/granja.tres"))
+	_register(preload("res://resources/buildings/aserradero.tres"))
+	_register(preload("res://resources/buildings/cantera.tres"))
+	_register(preload("res://resources/buildings/almacen.tres"))
 
 
 func _register(d: BuildingDef) -> void:
 	_defs[d.id] = d
 	_ids.append(d.id)
-
-
-func _make_granero() -> BuildingDef:
-	var d := BuildingDef.new()
-	d.id = &"granero"
-	d.display_name = "Granero"
-	d.description = "Almacena comida y grano. Aumenta la capacidad maxima del almacen del pueblo."
-	d.cost = {"madera": 25.0, "piedra": 15.0}
-	d.footprint = 1.0
-	d.biomes = [BuildingDef.Biome.LLANURA]
-	d.hint = "+50 almacen"
-	d.color = Color(0.95, 0.65, 0.2)
-	d.capacity = 300
-	d.capacity_resource = &"comida"
-	return d
-
-
-func _make_granja() -> BuildingDef:
-	var d := BuildingDef.new()
-	d.id = &"granja"
-	d.display_name = "Granja"
-	d.description = "Casita de campo con una parcela cultivable. Produce comida segun el tamano del campo."
-	d.cost = {"madera": 25.0}
-	d.prod_resource = &"comida"
-	d.prod_amount = 2.0
-	d.prod_interval = 5.0
-	d.footprint = 1.0
-	d.biomes = [BuildingDef.Biome.LLANURA]
-	d.hint = "casita + campo a elegir"
-	d.color = Color(0.55, 0.72, 0.3)
-	d.worker_count = 3
-	d.worker_names = PackedStringArray(["Campesino", "Jornalero", "Granjero"])
-	return d
-
-
-func _make_aserradero() -> BuildingDef:
-	var d := BuildingDef.new()
-	d.id = &"aserradero"
-	d.display_name = "Aserradero"
-	d.description = "Cabaña abierta con mesa de corte. Convierte tiempo en madera."
-	d.cost = {"madera": 30.0}
-	d.prod_resource = &"madera"
-	d.prod_amount = 2.0
-	d.prod_interval = 5.0
-	d.footprint = 1.1
-	d.biomes = [BuildingDef.Biome.BOSQUE]
-	d.hint = "+2 madera / 5s"
-	d.color = Color(0.62, 0.42, 0.22)
-	d.worker_count = 2
-	d.worker_names = PackedStringArray(["Leñador", "Carpintero"])
-	return d
-
-
-func _make_cantera() -> BuildingDef:
-	var d := BuildingDef.new()
-	d.id = &"cantera"
-	d.display_name = "Cantera"
-	d.description = "Bloques de piedra apilados al pie de la montana. Produce piedra."
-	d.cost = {"madera": 20.0, "piedra": 10.0}
-	d.prod_resource = &"piedra"
-	d.prod_amount = 2.0
-	d.prod_interval = 5.0
-	d.footprint = 1.1
-	d.biomes = [BuildingDef.Biome.MONTANA]
-	d.hint = "+2 piedra / 5s"
-	d.color = Color(0.55, 0.55, 0.58)
-	d.worker_count = 2
-	d.worker_names = PackedStringArray(["Cantero", "Picapedrero"])
-	return d
 
 
 # --- API publica ---
@@ -388,6 +323,14 @@ func demolish(rec: BuildingRecord) -> void:
 	if d != null:
 		for k in d.cost:
 			Economy.amounts[k] = Economy.amounts[k] + d.cost[k] * DEMOLISH_REFUND
+		# Contadores de capacidad: cada granero/almacen demolido reduce su cap.
+		# Produccion: el edificio deja de aportar al "+X.X/s" del HUD.
+		if rec.type == &"granero":
+			Economy.granary_count = maxi(0, Economy.granary_count - 1)
+		elif rec.type == &"almacen":
+			Economy.warehouse_count = maxi(0, Economy.warehouse_count - 1)
+		if d.can_produce() and not dev_free_build:
+			Economy.remove_production(d.prod_resource, d.prod_amount / d.prod_interval)
 		Economy.changed.emit()
 	# Limpia la seleccion si era este edificio (esto cierra el menu contextual).
 	if _selected == rec:
@@ -621,9 +564,19 @@ func _place() -> void:
 		return
 	if not dev_free_build:
 		Economy.spend_all(d.cost)
+	# Contadores de capacidad de almacenamiento. El granero amplia solo la
+	# comida; el almacen ampla el resto. Cualquier edificio construido
+	# registra su produccion en Economy para que el HUD muestre "+X.X/s".
 	if _pending == &"granero":
 		Economy.granary_count += 1
 		Economy.changed.emit()
+	elif _pending == &"almacen":
+		Economy.warehouse_count += 1
+		Economy.changed.emit()
+	# Registra la produccion del edificio para que el HUD muestre "+X.X/s".
+	# En modo dev (gratis y sin produccion) no se registra.
+	if d.can_produce() and not dev_free_build:
+		Economy.add_production(d.prod_resource, d.prod_amount / d.prod_interval)
 	var base_h := _base_height(ground, d.footprint)
 	# Raiz sin rotar apoyada en el punto de apoyo: el cuerpo gira con el yaw,
 	# la cimentacion no (sus pilares siguen la rejilla del terreno).

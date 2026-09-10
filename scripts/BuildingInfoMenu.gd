@@ -17,6 +17,7 @@ var _content: VBoxContainer = null
 var _catcher: ColorRect = null
 var _record: BuildingRecord = null
 var _buildings: Buildings = null
+var _demolish_button: Button = null
 
 
 func _ready() -> void:
@@ -105,16 +106,19 @@ func hide_menu() -> void:
 		_catcher.visible = false
 
 
-# Catch-all: loggea cualquier click mientras el menu este visible para
-# diagnosticar si el click llega al menu, al button, o se pierde.
+# Captura el clic directamente sobre el rect del boton. Esto evita depender
+# de la propagacion de eventos de Button dentro del PanelContainer/CanvasLayer.
 func _input(event: InputEvent) -> void:
 	if not visible:
 		return
 	if event is InputEventMouseButton and event.pressed \
 			and event.button_index == MOUSE_BUTTON_LEFT:
-		print("[INFO] click event at screen=", event.position,
-			" menu_rect=", Rect2(global_position, size),
-			" inside_menu=", Rect2(global_position, size).has_point(event.position))
+		if _demolish_button != null and is_instance_valid(_demolish_button):
+			var button_rect := Rect2(_demolish_button.global_position, _demolish_button.size)
+			if button_rect.has_point(event.position):
+				_on_demolish_pressed()
+				get_viewport().set_input_as_handled()
+				return
 
 
 func has_record() -> bool:
@@ -239,47 +243,32 @@ func _build_storage_row(parent: VBoxContainer) -> void:
 
 
 func _build_action_bar(parent: VBoxContainer) -> void:
-	# Boton enorme y full-width: imposible fallar al clicar.
+	# Boton compacto, fijo (no se estira). SIZE_SHRINK_CENTER hace que el
+	# VBoxContainer no le fuerce a llenar el ancho: se queda en su minimo.
 	var demolish := Button.new()
-	demolish.text = "X  Demoler (50% reembolso)"
-	demolish.add_theme_font_size_override("font_size", 14)
-	demolish.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	demolish.size_flags_vertical = Control.SIZE_FILL
-	demolish.custom_minimum_size = Vector2(0, 44)
-	demolish.mouse_filter = Control.MOUSE_FILTER_STOP
-	# gui_input manual: mas fiable que la senal pressed (que depende del
-	# timing press+release dentro del rect del boton).
-	demolish.gui_input.connect(_on_demolish_gui_input)
+	_demolish_button = demolish
+	demolish.text = "X  Demoler"
+	demolish.add_theme_font_size_override("font_size", 12)
+	demolish.custom_minimum_size = Vector2(110, 28)
+	demolish.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	var red := StyleBoxFlat.new()
-	red.bg_color = Color(0.55, 0.18, 0.18, 1.0)
-	red.set_corner_radius_all(6)
-	red.content_margin_left = 14
-	red.content_margin_right = 14
-	red.content_margin_top = 10
-	red.content_margin_bottom = 10
+	red.bg_color = Color(0.7, 0.15, 0.15, 1.0)
+	red.set_corner_radius_all(4)
+	red.content_margin_left = 8
+	red.content_margin_right = 8
+	red.content_margin_top = 4
+	red.content_margin_bottom = 4
 	demolish.add_theme_stylebox_override("normal", red)
 	var red_hover := red.duplicate()
-	red_hover.bg_color = Color(0.7, 0.22, 0.22, 1.0)
+	red_hover.bg_color = Color(0.85, 0.2, 0.2, 1.0)
 	demolish.add_theme_stylebox_override("hover", red_hover)
 	parent.add_child(demolish)
-
-
-func _on_demolish_gui_input(event: InputEvent) -> void:
-	if event is InputEventMouseButton and event.pressed \
-			and event.button_index == MOUSE_BUTTON_LEFT:
-		print("[INFO] Demoler gui_input click")
-		_on_demolish_pressed()
-
-
 func _on_demolish_pressed() -> void:
-	print("[INFO] _on_demolish_pressed ENTER record=", _record)
 	if _record == null or _buildings == null:
-		print("[INFO] abort: null check failed")
 		return
 	var rec := _record
 	hide_menu()
 	_buildings.demolish(rec)
-	print("[INFO] demolish llamado OK")
 
 
 func _fmt(n: float) -> String:

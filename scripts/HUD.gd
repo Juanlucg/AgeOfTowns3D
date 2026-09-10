@@ -89,6 +89,7 @@ func _ready() -> void:
 	store_row.add_theme_constant_override("separation", 8)
 	vbox.add_child(store_row)
 	_storage_label = _label(14)
+	_storage_label.mouse_filter = Control.MOUSE_FILTER_PASS
 	store_row.add_child(_storage_label)
 	_storage_bar = ProgressBar.new()
 	_storage_bar.custom_minimum_size = Vector2(150, 14)
@@ -148,18 +149,44 @@ func _update() -> void:
 
 
 func _update_resources() -> void:
-	# Cada recurso con su propia capacidad. La comida es la unica que
-	# crece con los graneros (ver Economy.storage_capacity_for).
+	# Formato: "Madera 40 +0.5/s" (cantidad + ritmo de produccion neto).
+	# El ritmo viene de los Buildings via Economy.production_rate(); si
+	# nadie esta produciendo ese recurso, no se muestra el sufijo.
 	for k in Economy.RESOURCE_NAMES:
-		var cap := int(Economy.storage_capacity_for(k))
-		(_res_labels[k] as Label).text = "%s  %d/%d" % [k.capitalize(), int(Economy.amounts[k]), cap]
-	# La barra de storage muestra especificamente la comida (la unica que
-	# se ampla con graneros; es lo que mas le importa al jugador).
+		var amount := int(Economy.amounts[k])
+		var rate := Economy.production_rate(k)
+		var rate_str := ""
+		if rate > 0.001:
+			rate_str = "  +%s/s" % _fmt_rate(rate)
+		(_res_labels[k] as Label).text = "%s  %d%s" % [k.capitalize(), amount, rate_str]
+	# La barra de abajo representa el TOTAL (suma de comida + resto).
+	# Hover muestra el desglose por tipo de almacen.
+	var total_used := int(Economy.storage_used())
+	var total_cap := int(Economy.storage_capacity())
+	_storage_bar.max_value = max(1, total_cap)
+	_storage_bar.value = total_used
+	_storage_label.text = "Almacen  %d/%d" % [total_used, total_cap]
+	# Tooltip con el desglose: cada tipo de almacen con su cap actual.
 	var food_used := int(Economy.storage_used_for("comida"))
 	var food_cap := int(Economy.storage_capacity_for("comida"))
-	_storage_bar.max_value = max(1, food_cap)
-	_storage_bar.value = food_used
-	_storage_label.text = "Comida %d/%d" % [food_used, food_cap]
+	var other_used := total_used - food_used
+	var other_cap := total_cap - food_cap
+	_storage_bar.tooltip_text = "Comida:  %d / %d\nResto:   %d / %d\nTotal:   %d / %d" % [
+		food_used, food_cap, other_used, other_cap, total_used, total_cap,
+	]
+	_storage_label.tooltip_text = _storage_bar.tooltip_text
+
+
+# Formato del ritmo de produccion: "2" si es entero, "0.5" si tiene
+# decimales. "0.03" -> 3 cifras, "1.5" -> 1 cifra.
+func _fmt_rate(r: float) -> String:
+	if r >= 10.0:
+		return "%d" % int(roundf(r))
+	if absf(r - roundf(r)) < 0.05:
+		return "%d" % int(roundf(r))
+	if r >= 1.0:
+		return "%.1f" % r
+	return "%.2f" % r
 
 
 func _fmt_hour(h: float) -> String:

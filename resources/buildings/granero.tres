@@ -1,0 +1,24 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3 uid="uid://b_granero_def"]
+
+[ext_resource type="Script" uid="uid://ctucq26cgi5hk" path="res://scripts/BuildingDef.gd" id="1_def"]
+
+[resource]
+script = ExtResource("1_def")
+id = &"granero"
+display_name = "Granero"
+description = "Almacena comida y grano. Aumenta la capacidad maxima del almacen del pueblo."
+cost = {
+"madera": 25.0,
+"piedra": 15.0
+}
+prod_resource = &""
+prod_amount = 0.0
+prod_interval = 0.0
+footprint = 1.0
+biomes = Array[int]([0])
+hint = "+50 almacen"
+color = Color(0.95, 0.65, 0.2, 1)
+capacity = 300
+capacity_resource = &"comida"
+worker_count = 0
+worker_names = PackedStringArray()

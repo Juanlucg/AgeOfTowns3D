@@ -1,15 +1,18 @@
 extends Node
-# Economia y almacenamiento del pueblo: cantidades de recursos, capacidad de
-# almacenaje y definiciones de costes de construccion.
+# Economia y almacenamiento del pueblo: cantidades de recursos, capacidad
+# de almacenaje y registro de produccion por recurso.
 # Emite "changed" cada vez que cambia algo para que el HUD se refresque.
 #
-# Almacenaje por RECURSO, no por total:
+# Almacenaje POR RECURSO, con dos almacenes fisicos:
 #   - Comida: capacidad = BASE_STORAGE + granary_count * GRANARY_STORAGE
 #     (los graneros amplian la capacidad SOLO de comida).
-#   - Otros recursos (madera, piedra, futuros como herramientas): capacidad
-#     = BASE_STORAGE, sin bonificacion de graneros.
-# Asi puedes acumular madera aunque la comida este al tope (antes la
-# capacidad era global y un solo recurso al tope bloqueaba los demas).
+#   - Resto (madera, piedra, futuros como herramientas): capacidad =
+#     BASE_STORAGE + warehouse_count * WAREHOUSE_STORAGE (los almacenes
+#     tradicionales amplian el resto). Los graneros NO afectan al resto.
+# Asi puedes acumular madera aunque la comida este al tope.
+#
+# Ritmo de produccion por recurso (unidades/segundo) lo mantienen los
+# Buildings via add_production / remove_production al colocar/demoler.
 #
 # Antes buscaba DayNightCycle cada frame por ruta absoluta. Ahora recibe la
 # dependencia via bind() desde Main.gd y reacciona a la senal `day_changed`.
@@ -26,8 +29,9 @@ const RESOURCE_COLORS := {
 	"piedra": Color(0.55, 0.55, 0.58),
 	"comida": Color(0.55, 0.72, 0.30),
 }
-const BASE_STORAGE := 200.0
-const GRANARY_STORAGE := 50.0
+const BASE_STORAGE := 200.0          # base comun para comida y resto
+const GRANARY_STORAGE := 50.0       # +50 comida por granero
+const WAREHOUSE_STORAGE := 200.0    # +200 al resto por almacen
 const DAILY_FOOD := 3.0
 # Comida va al granero; el resto al almacen tradicional. Si anades un
 # recurso nuevo (herramientas, etc.) que no sea "comida", va al almacen
@@ -36,6 +40,10 @@ const FOOD_RESOURCE := "comida"
 
 var amounts := {"madera": 40.0, "piedra": 25.0, "comida": 20.0}
 var granary_count := 0
+var warehouse_count := 0
+# Produccion neta por recurso en unidades/segundo. La mantienen los
+# Buildings al colocar/demoler; el HUD la lee para mostrar "+X.X/s".
+var _production_rates: Dictionary = {}
 
 var _day_night: DayNightCycle = null
 
@@ -48,26 +56,31 @@ func bind_day_night(dn: DayNightCycle) -> void:
 		_day_night.day_changed.connect(_on_day_changed)
 
 
-# Capacidad y uso POR RECURSO. La comida crece con los graneros; el resto no.
+# Capacidad POR RECURSO. La comida crece con graneros; el resto con almacenes.
 func storage_capacity_for(resource: StringName) -> float:
 	if resource == FOOD_RESOURCE:
 		return BASE_STORAGE + granary_count * GRANARY_STORAGE
-	return BASE_STORAGE
+	return BASE_STORAGE + warehouse_count * WAREHOUSE_STORAGE
+
+
+# Capacidad total (suma de todas las caps por recurso). Lo que ve la
+# barra de storage del HUD y el tooltip con el desglose.
+func storage_capacity() -> float:
+	var total := 0.0
+	for k in RESOURCE_NAMES:
+		total += storage_capacity_for(k)
+	return total
 
 
 func storage_used_for(resource: StringName) -> float:
 	return amounts.get(resource, 0.0)
 
 
-# Compatibilidad: el HUD antiguo y el tooltip de edificios usan estas para
-# mostrar "X/Y". Como ahora la capacidad es por recurso, devolvemos
-# comida (el unico recurso donde la capacidad cambia con edificios).
-func storage_capacity() -> float:
-	return storage_capacity_for(FOOD_RESOURCE)
-
-
 func storage_used() -> float:
-	return storage_used_for(FOOD_RESOURCE)
+	var total := 0.0
+	for k in amounts:
+		total += amounts[k]
+	return total
 
 
 # Suma recursos respetando la capacidad POR RECURSO. Devuelve lo realmente
@@ -100,10 +113,7 @@ func can_afford(cost: Dictionary) -> bool:
 
 
 # Devuelve un coste ya cobrado (p.ej. cancelar una construccion a medias).
-# Pasa por add(), asi que respeta la capacidad POR RECURSO: si la comida
-# se lleno mientras tanto, se devuelve lo que quepa de comida y el resto
-# del reembolso se pierde. Antes los sitios de llamada tocaban `amounts`
-# a mano y podian dejar el almacen por encima de su capacidad.
+# Pasa por add(), asi que respeta la capacidad POR RECURSO.
 func refund(cost: Dictionary) -> void:
 	for k in cost:
 		add(k, cost[k])
@@ -116,6 +126,24 @@ func spend_all(cost: Dictionary) -> bool:
 		amounts[k] -= cost[k]
 	changed.emit()
 	return true
+
+
+# Produccion neta (unidades/segundo) por recurso. La gestionan los Buildings
+# al colocar/demoler; el HUD solo la lee.
+func add_production(resource: StringName, rate: float) -> void:
+	if rate <= 0.0:
+		return
+	_production_rates[resource] = _production_rates.get(resource, 0.0) + rate
+
+
+func remove_production(resource: StringName, rate: float) -> void:
+	if rate <= 0.0:
+		return
+	_production_rates[resource] = _production_rates.get(resource, 0.0) - rate
+
+
+func production_rate(resource: StringName) -> float:
+	return _production_rates.get(resource, 0.0)
 
 
 func _on_day_changed(day: int) -> void:

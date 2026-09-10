@@ -9,7 +9,7 @@ class_name BuildMenu
 const UIStyle := preload("res://scripts/UIStyle.gd")
 const BuildingTooltip := preload("res://scripts/BuildingTooltip.gd")
 
-const TYPE_KEYS: Array[StringName] = [&"granero", &"granja", &"aserradero", &"cantera"]
+const TYPE_KEYS: Array[StringName] = [&"granero", &"granja", &"aserradero", &"cantera", &"almacen"]
 
 var _buttons := {}
 var _group := ButtonGroup.new()
@@ -65,7 +65,7 @@ func _ready() -> void:
 		_buttons[id] = b
 
 	_hint = Label.new()
-	_hint.text = "1-4: elegir edificio   |   clic: colocar   |   mantener R: rotar   |   Esc o clic der.: cancelar   |   Delete: demoler seleccionado"
+	_hint.text = "1-5: elegir edificio   |   clic: colocar   |   mantener R: rotar   |   Esc o clic der.: cancelar   |   Delete: demoler seleccionado"
 	_hint.add_theme_font_size_override("font_size", 12)
 	_hint.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
 	_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -126,4 +126,3 @@ func _unhandled_input(event: InputEvent) -> void:
 			_buildings.select(String(TYPE_KEYS[i]))
 			get_viewport().set_input_as_handled()
 			return
-
