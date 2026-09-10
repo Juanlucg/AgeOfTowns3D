@@ -400,7 +400,10 @@ func _process(delta: float) -> void:
 		if dir.length_squared() > 0.0001:
 			dir.y = 0
 			dir = dir.normalized()
-			_yaw = rad_to_deg(atan2(dir.x, dir.z))
+			# +180: la cara del edificio (puerta) en los meshes esta en -Z
+			# local (no +Z como pensabamos). Empíricamente la puerta queda
+			# detras si solo calculamos atan2; este offset lo corrige.
+			_yaw = rad_to_deg(atan2(dir.x, dir.z)) + 180.0
 	var d := get_def(_pending)
 	var base_h := _base_height(ground, d.footprint)
 	_ghost.position = Vector3(ground.x, base_h, ground.y)
