@@ -229,7 +229,8 @@ func _build_storage_row(parent: VBoxContainer) -> void:
 		dot.color = Economy.RESOURCE_COLORS.get(k, Color.WHITE)
 		cell.add_child(dot)
 		var amount: int = int(Economy.amounts.get(k, 0.0))
-		var cap: int = int(Economy.storage_capacity())
+		# Capacidad POR RECURSO: solo comida crece con graneros.
+		var cap: int = int(Economy.storage_capacity_for(k))
 		var lbl := Label.new()
 		lbl.text = "%s %d/%d" % [k, amount, cap]
 		lbl.add_theme_font_size_override("font_size", 11)

@@ -148,13 +148,18 @@ func _update() -> void:
 
 
 func _update_resources() -> void:
+	# Cada recurso con su propia capacidad. La comida es la unica que
+	# crece con los graneros (ver Economy.storage_capacity_for).
 	for k in Economy.RESOURCE_NAMES:
-		(_res_labels[k] as Label).text = "%s  %d" % [k.capitalize(), int(Economy.amounts[k])]
-	var used := int(Economy.storage_used())
-	var cap := int(Economy.storage_capacity())
-	_storage_bar.max_value = cap
-	_storage_bar.value = used
-	_storage_label.text = "Almacen %d/%d" % [used, cap]
+		var cap := int(Economy.storage_capacity_for(k))
+		(_res_labels[k] as Label).text = "%s  %d/%d" % [k.capitalize(), int(Economy.amounts[k]), cap]
+	# La barra de storage muestra especificamente la comida (la unica que
+	# se ampla con graneros; es lo que mas le importa al jugador).
+	var food_used := int(Economy.storage_used_for("comida"))
+	var food_cap := int(Economy.storage_capacity_for("comida"))
+	_storage_bar.max_value = max(1, food_cap)
+	_storage_bar.value = food_used
+	_storage_label.text = "Comida %d/%d" % [food_used, food_cap]
 
 
 func _fmt_hour(h: float) -> String:
