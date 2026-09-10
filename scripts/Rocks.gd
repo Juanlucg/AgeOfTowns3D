@@ -88,6 +88,8 @@ func _apply_populated() -> void:
 	_assign_transforms(_mmis[0], _boulder_result)
 	_assign_transforms(_mmis[1], _crag_result)
 	_assign_transforms(_mmis[2], _slab_result)
+	_populated = true
+	_flush_pending_clears()
 
 
 func _mesh_rng(rng_seed: int) -> RandomNumberGenerator:

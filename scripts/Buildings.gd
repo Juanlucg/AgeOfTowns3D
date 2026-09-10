@@ -66,6 +66,10 @@ var _ghost: Node3D = null
 var _ghost_building: Node3D = null
 var _ghost_foundation: Node3D = null
 var _placed: Array[BuildingRecord] = []
+# Spatial hash: para evitar el O(N) de building_at/_is_valid.
+# cell_size >= footprint_max + hit_radius = ~3 + 1.5 + margen.
+const _GRID_CELL := 8.0
+var _grid: Dictionary = {}   # clave: Vector2i(cell_x, cell_y) -> Array[BuildingRecord]
 var _cam_rig: CameraController3D
 
 var _field_mode := false
@@ -210,7 +214,7 @@ func get_selected() -> BuildingRecord:
 # tambien selecciona la granja: el campo ocupa mucha superficie y bloquearia
 # el clic a la casita.
 func building_at(ground: Vector2) -> BuildingRecord:
-	for b in _placed:
+	for b in _nearby(ground):
 		var d := get_def(b.type)
 		if d == null:
 			continue
@@ -223,6 +227,88 @@ func building_at(ground: Vector2) -> BuildingRecord:
 				and ground.y >= b.field_min.y and ground.y <= b.field_max.y:
 				return b
 	return null
+
+
+# Devuelve los BuildingRecord cuyas celdas del spatial hash contienen el
+# punto dado. Si no, los edificios de la misma celda (o adyacentes) que
+# el cursor. Sin esto, building_at y _is_valid son O(N) sobre _placed.
+func _nearby(ground: Vector2) -> Array[BuildingRecord]:
+	var cell := Vector2i(int(floor(ground.x / _GRID_CELL)), int(floor(ground.y / _GRID_CELL)))
+	var out: Array[BuildingRecord] = []
+	# Mira la celda del punto y las 8 adyacentes (un edificio cerca puede
+	# ocupar hasta 2-3 celdas segun su tamano).
+	for dx in [-1, 0, 1]:
+		for dy in [-1, 0, 1]:
+			var key := Vector2i(cell.x + dx, cell.y + dy)
+			var bucket: Array = _grid.get(key, [])
+			for b in bucket:
+				out.append(b)
+	return out
+
+
+# Anade un edificio a las celdas que ocupa. Llamar al colocar.
+func _add_to_grid(rec: BuildingRecord) -> void:
+	var d := get_def(rec.type)
+	if d == null:
+		return
+	# Para edificios con campo, el AABB es el del campo. Si no, el cuadrado
+	# de la casita centrado en pos, con lado footprint.
+	var x0: float
+	var z0: float
+	var x1: float
+	var z1: float
+	if rec.field != null and rec.field_min != rec.field_max:
+		x0 = rec.field_min.x
+		z0 = rec.field_min.y
+		x1 = rec.field_max.x
+		z1 = rec.field_max.y
+	else:
+		var half := d.footprint * 0.5
+		x0 = rec.pos.x - half
+		z0 = rec.pos.y - half
+		x1 = rec.pos.x + half
+		z1 = rec.pos.y + half
+	var cx0 := int(floor(x0 / _GRID_CELL))
+	var cz0 := int(floor(z0 / _GRID_CELL))
+	var cx1 := int(floor(x1 / _GRID_CELL))
+	var cz1 := int(floor(z1 / _GRID_CELL))
+	for cx in range(cx0, cx1 + 1):
+		for cz in range(cz0, cz1 + 1):
+			var key := Vector2i(cx, cz)
+			if not _grid.has(key):
+				_grid[key] = []
+			(_grid[key] as Array).append(rec)
+
+
+# Quita un edificio del hash. Llamar al demoler.
+func _remove_from_grid(rec: BuildingRecord) -> void:
+	var d := get_def(rec.type)
+	if d == null:
+		return
+	var x0: float
+	var z0: float
+	var x1: float
+	var z1: float
+	if rec.field != null and rec.field_min != rec.field_max:
+		x0 = rec.field_min.x
+		z0 = rec.field_min.y
+		x1 = rec.field_max.x
+		z1 = rec.field_max.y
+	else:
+		var half := d.footprint * 0.5
+		x0 = rec.pos.x - half
+		z0 = rec.pos.y - half
+		x1 = rec.pos.x + half
+		z1 = rec.pos.y + half
+	var cx0 := int(floor(x0 / _GRID_CELL))
+	var cz0 := int(floor(z0 / _GRID_CELL))
+	var cx1 := int(floor(x1 / _GRID_CELL))
+	var cz1 := int(floor(z1 / _GRID_CELL))
+	for cx in range(cx0, cx1 + 1):
+		for cz in range(cz0, cz1 + 1):
+			var key := Vector2i(cx, cz)
+			var bucket: Array = _grid.get(key, [])
+			bucket.erase(rec)
 
 
 # Selecciona un edificio. Si ya estaba seleccionado, lo deselecciona.
@@ -295,13 +381,10 @@ func demolish_selected() -> void:
 
 
 func demolish(rec: BuildingRecord) -> void:
-	print("[BUILDINGS] demolish ENTER rec=", rec, " type=", rec.type if rec != null else "null")
 	if rec == null:
-		print("[BUILDINGS] abort: rec is null")
 		return
 	# Reembolso antes de cualquier cleanup para que el HUD lo vea.
 	var d := get_def(rec.type)
-	print("[BUILDINGS] def=", d)
 	if d != null:
 		for k in d.cost:
 			Economy.amounts[k] = Economy.amounts[k] + d.cost[k] * DEMOLISH_REFUND
@@ -312,8 +395,8 @@ func demolish(rec: BuildingRecord) -> void:
 	# Quita del registro ANTES de liberar los nodos para que is_placing() y
 	# demas consultas ya no lo vean.
 	_placed.erase(rec)
+	_remove_from_grid(rec)
 	# Libera los nodos visuales (casita y, si es granja, el campo).
-	print("[BUILDINGS] node=", rec.node, " is_valid=", is_instance_valid(rec.node) if rec.node != null else false)
 	if rec.node != null and is_instance_valid(rec.node):
 		rec.node.queue_free()
 	if rec.field != null and is_instance_valid(rec.field):
@@ -322,7 +405,6 @@ func demolish(rec: BuildingRecord) -> void:
 	if d != null:
 		building_demolished.emit(rec.type, rec.pos)
 		message_requested.emit("%s demolido (reembolso 50%%)" % d.display_name)
-	print("[BUILDINGS] demolish DONE")
 
 
 func _update_selection_marker() -> void:
@@ -554,6 +636,10 @@ func _place() -> void:
 	add_child(node)
 	var rec := BuildingRecord.new(_pending, ground, _yaw, node, dev_free_build)
 	_placed.append(rec)
+	# Spatial hash: edificios sin campo se indexan al colocar. Las granjas
+	# se indexan en _confirm_field (tras tener los bounds del campo).
+	if _pending != &"granja":
+		_add_to_grid(rec)
 	_attach_production_timer(rec)
 	building_built.emit(_pending, ground)
 	place_clear_requested.emit(ground, d.footprint + 1.0)
@@ -660,6 +746,9 @@ func _confirm_field() -> void:
 			fmax = Vector2(maxf(fmax.x, corner.x), maxf(fmax.y, corner.y))
 	_field_farm.field_min = fmin
 	_field_farm.field_max = fmax
+	# AABB del campo (con la rotacion de la granja aplicada): el spatial
+	# hash necesita este AABB en mundo para hit-testear correctamente.
+	_add_to_grid(_field_farm)
 	# Radio que cubre el campo entero incluidas las esquinas.
 	place_clear_requested.emit(center, rect.size.length() * 0.5 + 1.0)
 	_field_farm.amount = clampf(w * d * FIELD_RATE, 1.0, 25.0)
@@ -811,7 +900,9 @@ func _is_valid(pos: Vector2, type: StringName) -> bool:
 	if not dev_free_build and not Economy.can_afford(d.cost):
 		return false
 	var min_dist: float = d.footprint + 1.5
-	for b in _placed:
+	# Spatial hash: solo revisa edificios en la celda (o adyacentes) a pos.
+	# 9 celdas * ~1 edificio/celda = ~10 checks en vez de N (cientos).
+	for b in _nearby(pos):
 		if (b.pos - pos).length() < min_dist:
 			return false
 	return true

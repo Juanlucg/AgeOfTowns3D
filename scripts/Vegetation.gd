@@ -105,6 +105,11 @@ func _apply_populated() -> void:
 	_assign_transforms(_mmis[0], _pine_result)
 	_assign_transforms(_mmis[1], _round_result)
 	_assign_transforms(_mmis[2], _bush_result)
+	# Reproduce las limpiezas que llegaron durante el populate (si el jugador
+	# puso un edificio en el primer segundo, antes de que la MultiMesh tuviera
+	# instancias que limpiar).
+	_populated = true
+	_flush_pending_clears()
 
 
 # True si la posicion final es valida para plantar: bosque o llanura, con una

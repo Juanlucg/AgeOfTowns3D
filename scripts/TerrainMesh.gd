@@ -5,7 +5,7 @@ class_name TerrainMesh
 # de cada bioma con smoothstep: transiciones infinitamente suaves y sin
 # resolucion de textura, nitidas a cualquier zoom.
 
-const CELL := 0.45
+const CELL := 0.6  # 0.45 -> 890k triangulos; 0.6 -> ~445k (a simple vista igual)
 
 
 # Material del terreno, expuesto para que DayNightCycle ajuste sus uniforms

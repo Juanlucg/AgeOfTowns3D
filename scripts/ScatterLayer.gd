@@ -20,6 +20,13 @@ var _mmis: Array = []
 ## un hilo tocando un nodo que Godot esta destruyendo.
 var _task_id := -1
 
+## Llimpiezas pendientes durante el primer segundo, cuando la MultiMesh
+## todavia no tiene instancias (el populate corre en hilo). Se aplican
+## en _apply_populated para que no aparezcan arbustos/rocas dentro de un
+## edificio recien puesto durante ese intervalo.
+var _pending_clears: Array = []  # entradas: { pos: Vector2, radius: float }
+var _populated := false
+
 
 func _exit_tree() -> void:
 	if _task_id != -1:
@@ -75,6 +82,12 @@ func _assign_transforms(mmi: MultiMeshInstance3D, transforms: Array[Transform3D]
 ## una capa que ni siquiera toca la zona (el mundo mide 300x300 y cada limpieza
 ## son unos 5 m).
 func clear_near(world_pos: Vector2, radius: float) -> void:
+	# Si la capa todavia no esta poblada, encolamos para aplicarlo al
+	# terminar el populate (sino el efecto se pierde y aparecen arbustos
+	# dentro del edificio que acabamos de poner).
+	if not _populated:
+		_pending_clears.append({"pos": world_pos, "radius": radius})
+		return
 	var query_box := AABB(
 		Vector3(world_pos.x - radius, -1000.0, world_pos.y - radius),
 		Vector3(radius * 2.0, 2000.0, radius * 2.0),
@@ -83,6 +96,35 @@ func clear_near(world_pos: Vector2, radius: float) -> void:
 	for c in get_children():
 		if c is MultiMeshInstance3D:
 			var mm: MultiMesh = (c as MultiMeshInstance3D).multimesh
+			if not mm.get_aabb().intersects(query_box):
+				continue
+			for i in mm.instance_count:
+				var t: Transform3D = mm.get_instance_transform(i)
+				var dx: float = t.origin.x - world_pos.x
+				var dz: float = t.origin.z - world_pos.y
+				if dx * dx + dz * dz < r2:
+					mm.set_instance_transform(i, t.translated(Vector3(0, -50, 0)))
+
+
+# Llamado por la subclase al final de _apply_populated: vacia la cola
+# de limpiezas que llegaron durante el populate.
+func _flush_pending_clears() -> void:
+	for entry in _pending_clears:
+		_apply_clear(entry["pos"], entry["radius"])
+	_pending_clears.clear()
+
+
+func _apply_clear(world_pos: Vector2, radius: float) -> void:
+	var query_box := AABB(
+		Vector3(world_pos.x - radius, -1000.0, world_pos.y - radius),
+		Vector3(radius * 2.0, 2000.0, radius * 2.0),
+	)
+	var r2 := radius * radius
+	for c in get_children():
+		if c is MultiMeshInstance3D:
+			var mm: MultiMesh = (c as MultiMeshInstance3D).multimesh
+			if mm.instance_count == 0:
+				continue
 			if not mm.get_aabb().intersects(query_box):
 				continue
 			for i in mm.instance_count:
