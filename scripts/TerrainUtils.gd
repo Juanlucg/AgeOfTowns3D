@@ -1,13 +1,10 @@
 extends RefCounted
 class_name TerrainUtils
-# Utilidades puras de imagen: blur separable, distance field 2D, upsampling
-# bilineal e interpolacion bicubica Catmull-Rom.
-#
-# Antes vivian como metodos privados de Terrain.gd y reutilizaban su estado
-# (_width/_height). Aqui son funciones estaticas que reciben w/h, para que:
-#   - Se puedan probar sin instanciar el autoload Terrain.
-#   - Sean reutilizables (minimapa, validacion de campos, etc.).
-#   - Terrain.gd baje ~190 lineas.
+## Utilidades puras de imagen: blur separable, distance field 2D, upsampling
+## bilineal e interpolacion bicubica Catmull-Rom.
+##
+## Antes vivian como metodos privados de [Terrain]; ahora son estaticas
+## que reciben [param w]/[param h] para ser testables y reutilizables.
 
 # --- Interpolacion ---
 

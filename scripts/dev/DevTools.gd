@@ -9,6 +9,9 @@ class_name DevTools
 @export var day_night_path: NodePath
 @export var buildings_path: NodePath
 
+# Carga explicita (no depende de la resolucion de class_name por el indice).
+const UIStyle := preload("res://scripts/UIStyle.gd")
+
 var _day: DayNightCycle
 var _buildings: Buildings
 var _hour_slider: HSlider
@@ -24,6 +27,8 @@ func _ready() -> void:
 	layer = 11
 	_day = get_node_or_null(day_night_path) as DayNightCycle
 	_buildings = get_node_or_null(buildings_path) as Buildings
+	if _day != null:
+		_day.time_changed.connect(_on_time_changed)
 
 	var root := Control.new()
 	root.set_anchors_preset(Control.PRESET_TOP_RIGHT)
@@ -40,6 +45,13 @@ func _ready() -> void:
 	vbox.add_theme_constant_override("separation", 8)
 	panel.add_child(vbox)
 
+	# Contenido plegable. Se declara antes que el boton porque el lambda de
+	# plegado lo captura. El boton vive en title_row (fuera de `body`):
+	# antes ocultaba el VBox que lo contenia a el mismo, asi que una vez
+	# plegado no habia forma de volver a desplegarlo.
+	var body := VBoxContainer.new()
+	body.add_theme_constant_override("separation", 8)
+
 	# Titulo
 	var title_row := HBoxContainer.new()
 	title_row.add_theme_constant_override("separation", 6)
@@ -54,21 +66,24 @@ func _ready() -> void:
 	collapse.text = "—"
 	collapse.custom_minimum_size = Vector2(24, 24)
 	collapse.add_theme_font_size_override("font_size", 12)
-	collapse.pressed.connect(func(): vbox.visible = not vbox.visible; collapse.text = "+" if not vbox.visible else "—")
+	collapse.pressed.connect(func() -> void:
+		body.visible = not body.visible
+		collapse.text = "—" if body.visible else "+")
 	title_row.add_child(collapse)
+	vbox.add_child(body)
 
-	vbox.add_child(HSeparator.new())
+	body.add_child(HSeparator.new())
 
 	# --- Hora ---
 	var h_label := Label.new()
 	h_label.text = "Hora del dia"
 	h_label.add_theme_font_size_override("font_size", 12)
 	h_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.7))
-	vbox.add_child(h_label)
+	body.add_child(h_label)
 
 	var hour_row := HBoxContainer.new()
 	hour_row.add_theme_constant_override("separation", 8)
-	vbox.add_child(hour_row)
+	body.add_child(hour_row)
 
 	_hour_slider = HSlider.new()
 	_hour_slider.min_value = 0.0
@@ -90,30 +105,30 @@ func _ready() -> void:
 	_pause_btn.custom_minimum_size = Vector2(76, 26)
 	_pause_btn.add_theme_font_size_override("font_size", 12)
 	_pause_btn.toggled.connect(_on_pause_toggled)
-	vbox.add_child(_pause_btn)
+	body.add_child(_pause_btn)
 
-	vbox.add_child(HSeparator.new())
+	body.add_child(HSeparator.new())
 
 	# --- Estacion ---
 	var s_label := Label.new()
 	s_label.text = "Estacion"
 	s_label.add_theme_font_size_override("font_size", 12)
 	s_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.7))
-	vbox.add_child(s_label)
+	body.add_child(s_label)
 
 	_season_opt = OptionButton.new()
 	_season_opt.add_theme_font_size_override("font_size", 13)
 	for i in _day.SEASONS.size():
 		_season_opt.add_item(_day.SEASONS[i], i)
 	_season_opt.item_selected.connect(_on_season_selected)
-	vbox.add_child(_season_opt)
+	body.add_child(_season_opt)
 
 	# --- Tiempo / Clima ---
 	var w_label := Label.new()
 	w_label.text = "Tiempo (clima)"
 	w_label.add_theme_font_size_override("font_size", 12)
 	w_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.7))
-	vbox.add_child(w_label)
+	body.add_child(w_label)
 
 	_weather_opt = OptionButton.new()
 	_weather_opt.add_theme_font_size_override("font_size", 13)
@@ -122,22 +137,22 @@ func _ready() -> void:
 	_weather_opt.add_item("Lluvia", 2)
 	_weather_opt.add_item("Nieve", 3)
 	_weather_opt.item_selected.connect(_on_weather_selected)
-	vbox.add_child(_weather_opt)
+	body.add_child(_weather_opt)
 
-	vbox.add_child(HSeparator.new())
+	body.add_child(HSeparator.new())
 
 	# --- Edificios dev ---
 	var b_label := Label.new()
 	b_label.text = "Edificios (prueba)"
 	b_label.add_theme_font_size_override("font_size", 12)
 	b_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.7))
-	vbox.add_child(b_label)
+	body.add_child(b_label)
 
 	_dev_check = CheckBox.new()
 	_dev_check.text = "Colocacion libre (sin coste, sin produccion)"
 	_dev_check.add_theme_font_size_override("font_size", 12)
 	_dev_check.toggled.connect(_on_dev_toggled)
-	vbox.add_child(_dev_check)
+	body.add_child(_dev_check)
 
 	var hint := Label.new()
 	hint.text = "Solo para probar implantacion en el terreno."
@@ -145,18 +160,22 @@ func _ready() -> void:
 	hint.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.custom_minimum_size = Vector2(280, 0)
-	vbox.add_child(hint)
+	body.add_child(hint)
 
 	_sync_from_state()
+	# Sin _process: el slider sigue a DayNightCycle via la misma senal
+	# time_changed que usa HUD (10 Hz en vez de 60 Hz).
 
 
-func _process(_delta: float) -> void:
+func _on_time_changed(day_value: int, _season: int, hour: float, _weather: String) -> void:
 	if _updating:
 		return
-	if _day != null and not _hour_slider.has_focus() and not _day.dev_paused:
+	# _day es la referencia al DayNightCycle de instancia; los parametros
+	# del callback usan nombres distintos para no sombrearlo.
+	if not _hour_slider.has_focus() and not _day.dev_paused:
 		_updating = true
-		_hour_slider.value = _day.get_hour()
-		_hour_label.text = _fmt_hour(_day.get_hour())
+		_hour_slider.value = hour
+		_hour_label.text = _fmt_hour(hour)
 		_updating = false
 
 
@@ -228,13 +247,4 @@ func _fmt_hour(h: float) -> String:
 
 
 func _panel_style() -> StyleBoxFlat:
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0, 0, 0, 0.48)
-	sb.border_color = Color(1, 1, 1, 0.22)
-	sb.set_border_width_all(1)
-	sb.set_corner_radius_all(8)
-	sb.content_margin_left = 12
-	sb.content_margin_right = 12
-	sb.content_margin_top = 10
-	sb.content_margin_bottom = 10
-	return sb
+	return UIStyle.dev_panel()

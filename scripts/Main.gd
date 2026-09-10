@@ -21,6 +21,7 @@ extends Node3D
 @onready var build_menu: BuildMenu = $BuildMenu
 @onready var minimap: Minimap = $MinimapLayer/Minimap
 @onready var dev_tools: DevTools = $DevTools
+@onready var info_menu: BuildingInfoMenu = $InfoLayer/BuildingInfoMenu
 
 
 func _ready() -> void:
@@ -30,3 +31,13 @@ func _ready() -> void:
 	buildings.building_built.connect(minimap._on_building)
 	buildings.place_clear_requested.connect(vegetation.clear_near)
 	buildings.place_clear_requested.connect(rocks.clear_near)
+	info_menu.bind(buildings)
+	buildings.building_focus_changed.connect(_on_building_focus)
+	buildings.building_demolished.connect(minimap._on_building_demolished)
+
+
+func _on_building_focus(rec: BuildingRecord, screen_pos: Vector2) -> void:
+	if rec == null:
+		info_menu.hide_menu()
+	else:
+		info_menu.show_for(rec, screen_pos)

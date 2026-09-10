@@ -1,24 +1,29 @@
 extends CanvasLayer
 class_name BuildMenu
-# Menu de construccion en la parte inferior de la pantalla: un boton por tipo
-# de edificio (nombre, produccion y coste). Se elige con clic o con las teclas
-# 1-4; la colocacion (fantasma, rotacion y validacion) la gestiona Buildings.
+## Menu de construccion en la parte inferior: boton por tipo de edificio
+## (nombre, hint, coste) + tooltip al hover con detalle.
 
 @export var buildings_path: NodePath
 
-# IDs en el orden del menu. El registro real vive en Buildings._defs.
-const TYPE_KEYS: Array[StringName] = [&"granero", &"granja", &"aserradero", &"cantera"]
+# Carga explicita (no depende de la resolucion de class_name por el indice).
+const UIStyle := preload("res://scripts/UIStyle.gd")
+const BuildingTooltip := preload("res://scripts/BuildingTooltip.gd")
+
+const TYPE_KEYS: Array[StringName] = [&"granero", &"granja", &"aserradero", &"cantera", &"almacen"]
 
 var _buttons := {}
 var _group := ButtonGroup.new()
 var _buildings: Buildings
 var _hint: Label
 var _syncing := false
+var _tooltip: BuildingTooltip
 
 
 func _ready() -> void:
 	_buildings = get_node_or_null(buildings_path) as Buildings
-	assert(_buildings != null, "BuildMenu: buildings_path no asignado en el .tscn")
+	if _buildings == null:
+		push_error("BuildMenu: buildings_path no apunta a un Buildings en el .tscn")
+		return
 	layer = 10
 	_buildings.selection_changed.connect(_on_selection_changed)
 
@@ -51,34 +56,31 @@ func _ready() -> void:
 		b.toggle_mode = true
 		b.button_group = _group
 		b.custom_minimum_size = Vector2(170, 74)
-		b.text = "%s\n%s\n%s" % [d.display_name, d.hint, _cost_text(d.cost)]
+		b.text = "%s\n%s\ncosto: %s" % [d.display_name, d.hint, d.cost_text()]
 		b.add_theme_font_size_override("font_size", 13)
 		b.pressed.connect(_on_pressed.bind(id))
+		b.mouse_entered.connect(_on_button_hover.bind(id))
+		b.mouse_exited.connect(_on_button_unhover)
 		row.add_child(b)
 		_buttons[id] = b
 
 	_hint = Label.new()
-	_hint.text = "1-4: elegir edificio   |   clic: colocar   |   mantener R: rotar   |   Esc o clic der.: cancelar"
+	_hint.text = "1-5: elegir edificio   |   clic: colocar   |   mantener R: rotar   |   Esc o clic der.: cancelar   |   Delete: demoler seleccionado"
 	_hint.add_theme_font_size_override("font_size", 12)
 	_hint.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
 	_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vbox.add_child(_hint)
+
+	_tooltip = BuildingTooltip.new()
+	_tooltip.visible = false
+	add_child(_tooltip)
 
 	Economy.changed.connect(_refresh)
 	_refresh()
 
 
 func _panel_style() -> StyleBoxFlat:
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0, 0, 0, 0.45)
-	sb.border_color = Color(1, 1, 1, 0.25)
-	sb.set_border_width_all(1)
-	sb.set_corner_radius_all(8)
-	sb.content_margin_left = 14
-	sb.content_margin_right = 14
-	sb.content_margin_top = 10
-	sb.content_margin_bottom = 10
-	return sb
+	return UIStyle.panel()
 
 
 func _on_pressed(type: StringName) -> void:
@@ -94,6 +96,18 @@ func _on_selection_changed(type: StringName) -> void:
 	_syncing = false
 
 
+func _on_button_hover(id: StringName) -> void:
+	var d := _buildings.get_def(id)
+	if d == null:
+		return
+	var vp := get_viewport().get_visible_rect().size
+	_tooltip.show_for(d, Vector2(vp.x - _tooltip.size.x - 20, 20))
+
+
+func _on_button_unhover() -> void:
+	_tooltip.hide_tooltip()
+
+
 func _refresh() -> void:
 	for t in TYPE_KEYS:
 		var d := _buildings.get_def(t)
@@ -107,20 +121,8 @@ func _refresh() -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if _buildings.is_placing():
 		return
-	if event is InputEventKey and event.pressed and not event.echo:
-		var idx := -1
-		match event.keycode:
-			KEY_1: idx = 0
-			KEY_2: idx = 1
-			KEY_3: idx = 2
-			KEY_4: idx = 3
-		if idx >= 0:
-			_buildings.select(String(TYPE_KEYS[idx]))
+	for i in TYPE_KEYS.size():
+		if event.is_action_pressed("select_building_%d" % (i + 1)):
+			_buildings.select(String(TYPE_KEYS[i]))
 			get_viewport().set_input_as_handled()
-
-
-func _cost_text(cost: Dictionary) -> String:
-	var parts := []
-	for k in cost:
-		parts.append("%d %s" % [int(cost[k]), k])
-	return "costo: " + ", ".join(parts)
+			return

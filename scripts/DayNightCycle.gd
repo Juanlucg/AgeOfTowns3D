@@ -1,13 +1,11 @@
 extends Node3D
 class_name DayNightCycle
-# Ciclo dia/noche. Rota el sol alrededor del mundo, gestiona una luna para la
-# noche y ajusta un cielo procedural con shader (WorldEnvironment) junto con
-# la luz ambiental segun la posicion del sol.
-#
-# El sol y la luna se dibujan dentro del propio shader del cielo: sin sprites,
-# se desvanecen gradualmente cerca del horizonte y no generan artefactos.
-#
-# Emite `day_changed(day)` cada vez que avanza un dia (consumidores: Economy).
+## Ciclo dia/noche con 4 estaciones, clima (despejado/lluvia/nieve) y ciclo
+## lunar. Gestiona sol, luna, cielo procedural, niebla, acumulacion de
+## nieve en el terreno, agua mojada y ripples de lluvia.
+##
+## Emite [signal day_changed] cada vez que avanza un dia y
+## [signal time_changed] a ~10 Hz con la info que HUD/DevTools muestran.
 
 signal day_changed(day: int)
 signal time_changed(day: int, season: int, hour: float, weather_name: String)
@@ -15,6 +13,11 @@ signal time_changed(day: int, season: int, hour: float, weather_name: String)
 @export var cycle_duration := 600.0   # segundos por dia completo (10 min)
 @export var start_time := 0.42        # hora inicial (0.0 = medianoche, 0.5 = mediodia)
 @export var days_per_season := 2      # dias (ciclos dia/noche) por estacion
+## Clima aplicado al inicio de la partida durante `weather_grace_days`.
+## "auto" = clima estacional desde el primer dia. "despejado"/"lluvia"/"nieve"
+## = forzado durante los dias de gracia; despues pasa a auto.
+@export_enum("auto", "despejado", "lluvia", "nieve") var initial_weather: String = "auto"
+@export var weather_grace_days := 1   # dias con clima inicial fijo antes de pasar a auto
 
 const SEASONS := ["Primavera", "Verano", "Otoño", "Invierno"]
 
@@ -59,10 +62,14 @@ const GROUND_TOP_BY_SEASON := [
 	Color(0.52, 0.54, 0.58),
 ]
 const AMBIENT_DAY_BY_SEASON := [
-	Color(0.40, 0.48, 0.65),
-	Color.WHITE,
-	Color(0.55, 0.50, 0.45),
-	Color(0.50, 0.56, 0.65),
+	# Primavera (azul-fresco) - subido hacia neutro/cálido.
+	Color(0.55, 0.58, 0.60),
+	# Verano (cálido neutro).
+	Color(0.85, 0.78, 0.65),
+	# Otoño (cálido rojizo, luz dorada).
+	Color(0.85, 0.65, 0.45),
+	# Invierno (azul-frío más saturado, para más contraste con el calor de casa).
+	Color(0.50, 0.58, 0.72),
 ]
 const CLOUD_AMOUNT_BY_SEASON := [0.6, 0.45, 0.7, 0.85]
 const CLOUD_COLOR_BY_SEASON := [
@@ -204,23 +211,33 @@ var _rain_splash: GPUParticles3D
 
 # Referencias a hermanos bajo Main. Se resuelven una sola vez en _ready:
 # si renombras o mueves DayNightCycle, falla aqui con un assert claro.
-@onready var _ground: MeshInstance3D = get_parent().get_node_or_null("Ground") as MeshInstance3D
+@onready var _ground: TerrainMesh = get_parent().get_node_or_null("Ground") as TerrainMesh
 @onready var _veg: Vegetation = get_parent().get_node_or_null("Vegetation") as Vegetation
 @onready var _cam_rig: CameraController3D = get_parent().get_node_or_null("CameraRig") as CameraController3D
-@onready var _terrain_mat: ShaderMaterial = _ground.get_surface_override_material(0) as ShaderMaterial if _ground != null else null
+@onready var _terrain_mat: ShaderMaterial = _ground.terrain_material if _ground != null else null
+@onready var _sea: OpenSea = get_parent().get_node_or_null("OpenSea") as OpenSea
 
 # --- Herramientas dev ---
 var dev_paused := false
-var _dev_weather_override := "despejado"  # ""=auto, "despejado"/"lluvia"/"nieve" — inicia despejado
+var _dev_weather_override := ""  # ""=auto, "despejado"/"lluvia"/"nieve"
 
 # Acumulacion visual de nieve y mojado por lluvia
 var _snow_cover := 0.0  # 0..0.55 fina capa
 var _wet_amount := 0.0
 var _rain_ripple := 0.0
+var _weather_grace_left := 0  # dias restantes con initial_weather forzado
 
 
 func _ready() -> void:
 	_time = start_time
+	# Dias de gracia: los primeros dias se respeta initial_weather aunque
+	# no sea "auto"; al acabarse, pasamos a modo estacional real.
+	if initial_weather == "auto":
+		_weather_grace_left = 0
+		_dev_weather_override = ""
+	else:
+		_weather_grace_left = weather_grace_days
+		_dev_weather_override = initial_weather
 
 	for child in get_parent().get_children():
 		if child is DirectionalLight3D:
@@ -246,11 +263,21 @@ func _ready() -> void:
 	_env.background_mode = Environment.BG_SKY
 	_env.sky = sky_resource
 	_env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
+	# Antes: el cielo ponia el 100% de la luz ambiental, ignorando
+	# ambient_light_color. Bajamos la contribucion del cielo al 45% para
+	# que el color por estacion (AMBIENT_DAY_BY_SEASON) tenga efecto.
+	_env.ambient_light_sky_contribution = 0.45
 	_env.ambient_light_energy = DAY_AMBIENT
 	_env.ambient_light_color = Color.WHITE
 	_env.fog_enabled = true
 	_env.fog_density = 0.0
 	_env.fog_light_color = FOG_COLOR_BY_SEASON[0]
+	# Niebla aerea: lo lejano toma el color del cielo en esa misma direccion
+	# en vez de desvanecerse hacia un gris plano. Sin esto el mar acaba en una
+	# banda gris antes de llegar al horizonte, y el terreno lejano se apaga.
+	# Pon fog_aerial_perspective a 0.0 para volver al aspecto anterior.
+	_env.fog_aerial_perspective = 1.0
+	_env.fog_sky_affect = 0.0
 	var we := WorldEnvironment.new()
 	we.environment = _env
 	get_parent().add_child.call_deferred(we)
@@ -414,6 +441,11 @@ func _process(delta: float) -> void:
 		if _time < prev:
 			_day += 1
 			day_changed.emit(_day)
+			# Cuando termina el periodo de gracia, el clima pasa a auto.
+			if _weather_grace_left > 0:
+				_weather_grace_left -= 1
+				if _weather_grace_left == 0 and _dev_weather_override != "":
+					_dev_weather_override = ""
 	_apply_lighting()
 	_apply_weather()
 	_update_ground_weather(delta)
@@ -447,7 +479,10 @@ func get_season_name() -> String:
 
 # Progreso dentro de la estacion actual: 0 al empezar, 1 justo antes de cambiar.
 func get_season_progress() -> float:
-	return fmod(float(_day) / float(days_per_season), 1.0)
+	# Progreso 0..1 dentro de la estacion actual. Sumando _time (0..1, fraccion
+	# del dia), interpolamos tambien dentro del dia: pasar de 0 a 1 toma
+	# days_per_season dias + 1 dia completo, no solo a saltos cada days_per_season.
+	return (fmod(float(_day), float(days_per_season)) + _time) / float(days_per_season)
 
 
 func get_weather_name() -> String:
@@ -494,6 +529,10 @@ func _sun_elevation(t: float, peak: float) -> float:
 var _day_frac := 0.9
 var _sun_peak := 0.85
 
+# Ultima estacion/progreso aplicados, para no reescribir uniforms iguales.
+var _last_season := -1
+var _last_k := -1.0
+
 
 func _apply_lighting() -> void:
 	var k: float = get_season_progress()
@@ -533,29 +572,36 @@ func _apply_lighting() -> void:
 	_sky.set_shader_parameter("moon_dir", -sun_dir)
 	_sky.set_shader_parameter("moon_color", _v(MOON_DISC_COLOR))
 	_sky.set_shader_parameter("cloud_day", sky_curve)
-	_sky.set_shader_parameter("cloud_amount", _sfloat(CLOUD_AMOUNT_BY_SEASON, k))
-	_sky.set_shader_parameter("cloud_color", _v(_scolor(CLOUD_COLOR_BY_SEASON, k)))
 
 	# Luz ambiental: la noche nunca queda a oscuras; color por estacion
 	_env.ambient_light_energy = lerpf(NIGHT_AMBIENT, DAY_AMBIENT, day_curve)
 	_env.ambient_light_color = Color(0.35, 0.45, 0.65).lerp(_scolor(AMBIENT_DAY_BY_SEASON, k), day_curve)
 
-	# Terreno: colores de bioma y linea de nieve de la estacion
-	if _terrain_mat != null:
-		_terrain_mat.set_shader_parameter("u_plains", _v(_scolor(PLAINS_BY_SEASON, k)))
-		_terrain_mat.set_shader_parameter("u_forest", _v(_scolor(FOREST_BY_SEASON, k)))
-		_terrain_mat.set_shader_parameter("u_snow", _v(_scolor(SNOW_COLOR_BY_SEASON, k)))
-		_terrain_mat.set_shader_parameter("u_snow_level", _sfloat(SNOW_LEVEL_BY_SEASON, k))
-		_terrain_mat.set_shader_parameter("u_snow_cover", _snow_cover)
-		_terrain_mat.set_shader_parameter("u_wet", _wet_amount)
-		_terrain_mat.set_shader_parameter("u_rain_ripple", _rain_ripple)
+	# Lo que solo depende de la estacion (paleta del terreno, tinte del
+	# follaje, color de la niebla) se refresca solo cuando la estacion avanza.
+	# get_season_progress() cambia una vez por dia de juego, no por frame: antes
+	# esto reescribia 6 uniforms + 3 del follaje 60 veces por segundo para
+	# poner exactamente los mismos valores.
+	# u_snow_cover / u_wet / u_rain_ripple ya los escribe _update_ground_weather(),
+	# que corre despues en el mismo frame: aqui se escribian por duplicado.
+	var season := get_season()
+	if season != _last_season or not is_equal_approx(k, _last_k):
+		_last_season = season
+		_last_k = k
+		if _terrain_mat != null:
+			_terrain_mat.set_shader_parameter("u_plains", _v(_scolor(PLAINS_BY_SEASON, k)))
+			_terrain_mat.set_shader_parameter("u_forest", _v(_scolor(FOREST_BY_SEASON, k)))
+			_terrain_mat.set_shader_parameter("u_snow", _v(_scolor(SNOW_COLOR_BY_SEASON, k)))
+			_terrain_mat.set_shader_parameter("u_snow_level", _sfloat(SNOW_LEVEL_BY_SEASON, k))
+		_sky.set_shader_parameter("cloud_amount", _sfloat(CLOUD_AMOUNT_BY_SEASON, k))
+		_sky.set_shader_parameter("cloud_color", _v(_scolor(CLOUD_COLOR_BY_SEASON, k)))
+		_env.fog_light_color = _scolor(FOG_COLOR_BY_SEASON, k)
+		if _veg != null:
+			_veg.apply_season(season, k)
 
-	# Niebla de la estacion
+	# La densidad de niebla si varia por frame: _update_ground_weather le suma
+	# el extra de lluvia/nieve.
 	_env.fog_density = _sfloat(FOG_DENSITY_BY_SEASON, k)
-	_env.fog_light_color = _scolor(FOG_COLOR_BY_SEASON, k)
-
-	if _veg != null:
-		_veg.apply_season(get_season(), k)
 
 
 func dev_set_hour(h: float) -> void:
@@ -582,6 +628,13 @@ func dev_set_paused(p: bool) -> void:
 	dev_paused = p
 
 
+# Ultima intensidad aplicada. Reconfigurar el ParticleProcessMaterial y, sobre
+# todo, reasignar GPUParticles3D.amount reinicia el sistema de particulas: antes
+# se hacia en cada frame aunque el clima no hubiera cambiado.
+var _last_rain := -1.0
+var _last_snow := -1.0
+
+
 func _apply_weather() -> void:
 	if _rain == null or _snow == null:
 		return
@@ -602,6 +655,10 @@ func _apply_weather() -> void:
 		var k: float = get_season_progress()
 		rain = _sfloat(RAIN_BY_SEASON, k)
 		snow = _sfloat(SNOW_BY_SEASON, k)
+	if is_equal_approx(rain, _last_rain) and is_equal_approx(snow, _last_snow):
+		return
+	_last_rain = rain
+	_last_snow = snow
 	if rain > 0.001:
 		var pm := _rain.process_material as ParticleProcessMaterial
 		pm.gravity = Vector3(0.0, -55.0, 0.0)
@@ -680,6 +737,10 @@ func _update_ground_weather(delta: float) -> void:
 		_terrain_mat.set_shader_parameter("u_snow_cover", _snow_cover)
 		_terrain_mat.set_shader_parameter("u_wet", _wet_amount)
 		_terrain_mat.set_shader_parameter("u_rain_ripple", _rain_ripple)
+	# El mar abierto usa el mismo parametro, para que la lluvia no se pare de
+	# golpe en el borde del mapa.
+	if _sea != null and _sea.sea_material != null:
+		_sea.sea_material.set_shader_parameter("u_rain_ripple", _rain_ripple)
 	# Niebla extra con lluvia/nieve para cortina lejana
 	if _env != null:
 		var base_fog := _sfloat(FOG_DENSITY_BY_SEASON, get_season_progress())
@@ -703,8 +764,8 @@ func _update_rain_height() -> void:
 	if _snow != null:
 		_snow.global_position = pos_snow
 	if _rain_splash != null:
-		var hs: float = Terrain.height_at(Vector2(_cam_rig.global_position.x, _cam_rig.global_position.z))
-		_rain_splash.global_position = Vector3(half, hs + 0.25, half)
+		# Reutiliza la altura ya consultada arriba (antes se pedia dos veces).
+		_rain_splash.global_position = Vector3(half, h + 0.25, half)
 
 
 func _v(c: Color) -> Vector3:

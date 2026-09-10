@@ -1,13 +1,15 @@
 extends CanvasLayer
 class_name HUD
-# Interfaz de estado global (esquina superior izquierda): hora del dia, dia,
-# estacion, clima y panel de economia (recursos y almacenamiento). Los
-# recursos se refrescan con la señal "changed" de Economy.
-#
-# La dependencia de DayNightCycle se inyecta via `@export` NodePath en el
-# `.tscn`, no por busqueda de ruta absoluta en runtime.
+## Interfaz de estado global (esquina superior izquierda): estacion, dia,
+## hora, fase del dia, clima y panel de economia.
+##
+## Se actualiza con la senal [signal DayNightCycle.time_changed] (~10 Hz)
+## en vez de polleo por frame.
 
 @export var day_night_path: NodePath
+
+# Carga explicita (no depende de la resolucion de class_name por el indice).
+const UIStyle := preload("res://scripts/UIStyle.gd")
 
 const SEASON_COLORS := [
 	Color(0.45, 0.78, 0.35),  # primavera: verde
@@ -34,7 +36,11 @@ var _msg_timer: Timer
 
 func _ready() -> void:
 	_day = get_node_or_null(day_night_path) as DayNightCycle
-	assert(_day != null, "HUD: day_night_path no asignado en el .tscn")
+	if _day == null:
+		# assert() desaparece en las builds de release: alli esto reventaba
+		# con un null deref sin decir por que.
+		push_error("HUD: day_night_path no apunta a un DayNightCycle en el .tscn")
+		return
 	_day.time_changed.connect(_on_time_changed)
 	layer = 10
 
@@ -83,6 +89,7 @@ func _ready() -> void:
 	store_row.add_theme_constant_override("separation", 8)
 	vbox.add_child(store_row)
 	_storage_label = _label(14)
+	_storage_label.mouse_filter = Control.MOUSE_FILTER_PASS
 	store_row.add_child(_storage_label)
 	_storage_bar = ProgressBar.new()
 	_storage_bar.custom_minimum_size = Vector2(150, 14)
@@ -117,16 +124,7 @@ func show_message(text: String) -> void:
 
 
 func _panel_style() -> StyleBoxFlat:
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = Color(0, 0, 0, 0.45)
-	sb.border_color = Color(1, 1, 1, 0.25)
-	sb.set_border_width_all(1)
-	sb.set_corner_radius_all(6)
-	sb.content_margin_left = 14
-	sb.content_margin_right = 14
-	sb.content_margin_top = 10
-	sb.content_margin_bottom = 10
-	return sb
+	return UIStyle.panel()
 
 
 func _label(font_size: int, bold := false) -> Label:
@@ -151,13 +149,44 @@ func _update() -> void:
 
 
 func _update_resources() -> void:
+	# Formato: "Madera 40 +0.5/s" (cantidad + ritmo de produccion neto).
+	# El ritmo viene de los Buildings via Economy.production_rate(); si
+	# nadie esta produciendo ese recurso, no se muestra el sufijo.
 	for k in Economy.RESOURCE_NAMES:
-		(_res_labels[k] as Label).text = "%s  %d" % [k.capitalize(), int(Economy.amounts[k])]
-	var used := int(Economy.storage_used())
-	var cap := int(Economy.storage_capacity())
-	_storage_bar.max_value = cap
-	_storage_bar.value = used
-	_storage_label.text = "Almacen %d/%d" % [used, cap]
+		var amount := int(Economy.amounts[k])
+		var rate := Economy.production_rate(k)
+		var rate_str := ""
+		if rate > 0.001:
+			rate_str = "  +%s/s" % _fmt_rate(rate)
+		(_res_labels[k] as Label).text = "%s  %d%s" % [k.capitalize(), amount, rate_str]
+	# La barra de abajo representa el TOTAL (suma de comida + resto).
+	# Hover muestra el desglose por tipo de almacen.
+	var total_used := int(Economy.storage_used())
+	var total_cap := int(Economy.storage_capacity())
+	_storage_bar.max_value = max(1, total_cap)
+	_storage_bar.value = total_used
+	_storage_label.text = "Almacen  %d/%d" % [total_used, total_cap]
+	# Tooltip con el desglose: cada tipo de almacen con su cap actual.
+	var food_used := int(Economy.storage_used_for("comida"))
+	var food_cap := int(Economy.storage_capacity_for("comida"))
+	var other_used := total_used - food_used
+	var other_cap := total_cap - food_cap
+	_storage_bar.tooltip_text = "Comida:  %d / %d\nResto:   %d / %d\nTotal:   %d / %d" % [
+		food_used, food_cap, other_used, other_cap, total_used, total_cap,
+	]
+	_storage_label.tooltip_text = _storage_bar.tooltip_text
+
+
+# Formato del ritmo de produccion: "2" si es entero, "0.5" si tiene
+# decimales. "0.03" -> 3 cifras, "1.5" -> 1 cifra.
+func _fmt_rate(r: float) -> String:
+	if r >= 10.0:
+		return "%d" % int(roundf(r))
+	if absf(r - roundf(r)) < 0.05:
+		return "%d" % int(roundf(r))
+	if r >= 1.0:
+		return "%.1f" % r
+	return "%.2f" % r
 
 
 func _fmt_hour(h: float) -> String:

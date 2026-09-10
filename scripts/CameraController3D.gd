@@ -1,19 +1,27 @@
 extends Node3D
 class_name CameraController3D
-# Camara de estrategia: vista aerea navegable sobre el mapa.
-#
-# Estructura: CameraRig (pivote, este script) -> Camera3D (hija).
-# El pivote marca el punto del suelo que se observa; la camara se coloca
-# por trigonometria esferica alrededor de ese punto.
-#
-# Controles:
-#   WASD / flechas   -> moverse por el mapa
-#   Boton der/centro + arrastrar -> orbitar (girar e inclinar)
-#   Rueda            -> zoom
-#   Q / E            -> rotar la vista
+## Camara de estrategia: vista aerea navegable sobre el mapa con smoothing.
+##
+## Estructura: CameraRig (pivote, este script) -> Camera3D (hija).
+## El pivote marca el punto del suelo que se observa; la camara se coloca
+## por trigonometria esferica alrededor de ese punto.
+##
+## Controles (acciones en project.godot):
+##   move_forward/back/left/right -> moverse
+##   rotate_camera_left/right     -> rotar la vista
+##   rotate_building (en colocacion) -> rotar el fantasma
+##   click central/derecho + drag -> orbitar (girar e inclinar)
+##   rueda -> zoom
+##
+## Emite [signal viewport_changed] cada vez que la camara cambia de forma
+## relevante (consumidores como Minimap lo usan para invalidar caches).
 
 @export var map_corner_min: Vector2 = Vector2(0.0, 0.0)
 @export var map_corner_max: Vector2 = Vector2.ZERO   # si queda en cero, se toma el tamano del mapa
+
+# Emitido cada vez que la camara (posicion/yaw/pitch/zoom) cambia de forma
+# relevante. Consumidores (p.ej. Minimap) lo usan para invalidar caches.
+signal viewport_changed
 
 const YAW_DEFAULT := 0.0
 const PITCH_DEFAULT := 30.0
@@ -29,6 +37,9 @@ const ORBIT_SENSITIVITY := 0.006
 const BORDER := 2.0
 const CAMERA_CLEARANCE := 1.5   # distancia minima de la camara al terreno
 
+# Smoothing: cuanto menor, mas suave pero con mas latencia. 0 = sin smoothing.
+const SMOOTH_FACTOR := 12.0
+
 var _cam: Camera3D
 var _yaw := 0.0
 var _pitch := deg_to_rad(PITCH_DEFAULT)
@@ -38,13 +49,22 @@ var _drag_from := Vector2.ZERO
 var _yaw_before := 0.0
 var _pitch_before := 0.0
 
+# Targets (input del usuario) y actuales (los que se aplican). Lerp entre ambos
+# en _process para que zoom/orbitar/movimiento se sienta fluido.
+var _yaw_target := 0.0
+var _pitch_target := deg_to_rad(PITCH_DEFAULT)
+var _zoom_target := ZOOM_START
+var _position_target := Vector3.ZERO
+
 
 func _ready() -> void:
 	_cam = $Camera3D
 	_cam.current = true
 	if map_corner_max == Vector2.ZERO:
 		map_corner_max = Vector2(Terrain.WORLD_SIZE, Terrain.WORLD_SIZE)
-	position = Vector3((map_corner_min.x + map_corner_max.x) * 0.5, 0.0, (map_corner_min.y + map_corner_max.y) * 0.5)
+	var center := Vector3((map_corner_min.x + map_corner_max.x) * 0.5, 0.0, (map_corner_min.y + map_corner_max.y) * 0.5)
+	position = center
+	_position_target = center
 	_apply()
 
 
@@ -73,22 +93,19 @@ func _unhandled_input(event: InputEvent) -> void:
 		if btn.button_index == MOUSE_BUTTON_MIDDLE or btn.button_index == MOUSE_BUTTON_RIGHT:
 			_orbiting = btn.pressed
 			_drag_from = btn.position
-			_yaw_before = _yaw
-			_pitch_before = _pitch
+			_yaw_before = _yaw_target
+			_pitch_before = _pitch_target
 		elif btn.button_index == MOUSE_BUTTON_WHEEL_UP and btn.pressed:
-			_zoom = clampf(_zoom - ZOOM_STEP, ZOOM_MIN, ZOOM_MAX)
-			_apply()
+			_zoom_target = clampf(_zoom_target - ZOOM_STEP, ZOOM_MIN, ZOOM_MAX)
 		elif btn.button_index == MOUSE_BUTTON_WHEEL_DOWN and btn.pressed:
-			_zoom = clampf(_zoom + ZOOM_STEP, ZOOM_MIN, ZOOM_MAX)
-			_apply()
+			_zoom_target = clampf(_zoom_target + ZOOM_STEP, ZOOM_MIN, ZOOM_MAX)
 
 	if event is InputEventMouseMotion:
 		var mm := event as InputEventMouseMotion
 		if _orbiting:
 			var delta := mm.position - _drag_from
-			_yaw = _yaw_before + delta.x * ORBIT_SENSITIVITY
-			_pitch = clampf(_pitch_before - delta.y * ORBIT_SENSITIVITY, deg_to_rad(PITCH_MIN), deg_to_rad(PITCH_MAX))
-			_apply()
+			_yaw_target = _yaw_before + delta.x * ORBIT_SENSITIVITY
+			_pitch_target = clampf(_pitch_before - delta.y * ORBIT_SENSITIVITY, deg_to_rad(PITCH_MIN), deg_to_rad(PITCH_MAX))
 
 
 func _process(delta: float) -> void:
@@ -96,37 +113,45 @@ func _process(delta: float) -> void:
 		_orbiting = false
 
 	var dir := Vector2.ZERO
-	if Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP):
+	if Input.is_action_pressed("move_forward"):
 		dir.y -= 1
-	if Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN):
+	if Input.is_action_pressed("move_back"):
 		dir.y += 1
-	if Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT):
+	if Input.is_action_pressed("move_left"):
 		dir.x -= 1
-	if Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT):
+	if Input.is_action_pressed("move_right"):
 		dir.x += 1
 
 	var yaw_input := 0.0
-	if Input.is_key_pressed(KEY_Q):
+	if Input.is_action_pressed("rotate_camera_left"):
 		yaw_input -= 1
-	if Input.is_key_pressed(KEY_E):
+	if Input.is_action_pressed("rotate_camera_right"):
 		yaw_input += 1
-
-	var changed := false
 
 	if dir != Vector2.ZERO:
 		dir = dir.normalized()
-		var speed: float = MOVE_SPEED * (_zoom / ZOOM_START) * delta
-		position += _right() * dir.x * speed - _forward() * dir.y * speed
-		position.x = clampf(position.x, map_corner_min.x - BORDER, map_corner_max.x + BORDER)
-		position.z = clampf(position.z, map_corner_min.y - BORDER, map_corner_max.y + BORDER)
-		changed = true
+		var speed: float = MOVE_SPEED * (_zoom_target / ZOOM_START) * delta
+		_position_target += _right() * dir.x * speed - _forward() * dir.y * speed
+		_position_target.x = clampf(_position_target.x, map_corner_min.x - BORDER, map_corner_max.x + BORDER)
+		_position_target.z = clampf(_position_target.z, map_corner_min.y - BORDER, map_corner_max.y + BORDER)
 
 	if yaw_input != 0.0:
-		_yaw += yaw_input * ROTATE_SPEED * delta
-		changed = true
+		_yaw_target += yaw_input * ROTATE_SPEED * delta
 
-	if changed:
-		_apply()
+	# Lerp hacia los targets. SMOOTH_FACTOR escala con delta para ser
+	# independiente del frame rate.
+	var t: float = 1.0 - exp(-SMOOTH_FACTOR * delta)
+	var yaw_prev := _yaw
+	var pitch_prev := _pitch
+	var zoom_prev := _zoom
+	var pos_prev := position
+	_yaw = lerpf(_yaw, _yaw_target, t)
+	_pitch = lerpf(_pitch, _pitch_target, t)
+	_zoom = lerpf(_zoom, _zoom_target, t)
+	position = position.lerp(_position_target, t)
+	_apply()
+	if _yaw != yaw_prev or _pitch != pitch_prev or _zoom != zoom_prev or position != pos_prev:
+		viewport_changed.emit()
 
 
 # Convierte una posicion de pantalla en el punto del suelo que se ve, teniendo
@@ -139,9 +164,17 @@ func screen_to_ground(screen_pos: Vector2) -> Vector2:
 
 
 # Mueve el punto observado al suelo indicado (p.ej. clic en el minimapa).
+# Animado: salta el target, el smoothing se encarga del resto.
 func move_to(ground: Vector2) -> void:
-	position = Vector3(ground.x, 0.0, ground.y)
-	_apply()
+	_position_target = Vector3(ground.x, 0.0, ground.y)
+
+
+# Proyecta un punto del mundo a coordenadas de pantalla.
+# Util para anclar UI 3D-to-2D (e.g. menu contextual sobre un edificio).
+func world_to_screen(world_pos: Vector3) -> Vector2:
+	if _cam == null:
+		return Vector2.ZERO
+	return _cam.unproject_position(world_pos)
 
 
 func _march(origin: Vector3, ray: Vector3) -> Vector3:

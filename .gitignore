@@ -1,2 +1,10 @@
-# Caché del editor de Godot
+# Cache del editor de Godot
 .godot/
+
+# Exportaciones
+/build/
+export_presets.cfg
+
+# Sistema operativo
+.DS_Store
+Thumbs.db

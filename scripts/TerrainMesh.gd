@@ -1,18 +1,55 @@
 extends MeshInstance3D
+class_name TerrainMesh
 # Malla del suelo. La altura y el ruido de bosque se pasan como atributos de
 # vertice (se interpolan suavemente por triangulo) y el shader calcula el color
 # de cada bioma con smoothstep: transiciones infinitamente suaves y sin
 # resolucion de textura, nitidas a cualquier zoom.
 
-const CELL := 0.45
+const CELL := 0.6  # 0.45 -> 890k triangulos; 0.6 -> ~445k (a simple vista igual)
+
+
+# Material del terreno, expuesto para que DayNightCycle ajuste sus uniforms
+# (estacion, nieve, mojado). Antes lo sacaba con get_surface_override_material(0),
+# lo que obligaba a que la malla existiese ya en el _ready de este nodo.
+var terrain_material: ShaderMaterial
+
+# La malla son 445k vertices y ~890k triangulos, y cada vertice hace tres
+# consultas al terreno (una de ellas bicubica): ~2,2 s de hilo principal
+# congelado. El calculo es matematica pura sobre arrays, asi que se hace en un
+# hilo del WorkerThreadPool y solo la creacion del ArrayMesh (rapida, es subir
+# datos a la GPU) se queda en el hilo principal.
+var _task_id := -1
+var _arrays: Array = []
 
 
 func _ready() -> void:
-	mesh = _build_mesh()
-	_apply_material()
+	terrain_material = _make_material()
+	material_override = terrain_material
+	_task_id = WorkerThreadPool.add_task(_build_arrays_threaded)
 
 
-func _build_mesh() -> ArrayMesh:
+func _exit_tree() -> void:
+	if _task_id != -1:
+		WorkerThreadPool.wait_for_task_completion(_task_id)
+		_task_id = -1
+
+
+func _build_arrays_threaded() -> void:
+	_arrays = _build_arrays()
+	call_deferred("_apply_arrays")
+
+
+func _apply_arrays() -> void:
+	if _arrays.is_empty():
+		return
+	var m := ArrayMesh.new()
+	var flags := Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM0_SHIFT
+	m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, _arrays, [], {}, flags)
+	mesh = m
+	_arrays = []
+
+
+func _build_arrays() -> Array:
 	var size: float = Terrain.WORLD_SIZE
 	var steps := int(size / CELL)
 	var side := steps + 1
@@ -92,13 +129,10 @@ func _build_mesh() -> ArrayMesh:
 	arr[Mesh.ARRAY_TEX_UV] = uvs
 	arr[Mesh.ARRAY_CUSTOM0] = custom
 	arr[Mesh.ARRAY_INDEX] = inds
-	var m := ArrayMesh.new()
-	var flags := Mesh.ARRAY_CUSTOM_RGBA_FLOAT << Mesh.ARRAY_FORMAT_CUSTOM0_SHIFT
-	m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr, [], {}, flags)
-	return m
+	return arr
 
 
-func _apply_material() -> void:
+func _make_material() -> ShaderMaterial:
 	var shader := Shader.new()
 	shader.code = """
 		shader_type spatial;
@@ -209,4 +243,4 @@ func _apply_material() -> void:
 
 	var mat := ShaderMaterial.new()
 	mat.shader = shader
-	set_surface_override_material(0, mat)
+	return mat

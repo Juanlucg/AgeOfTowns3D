@@ -1,0 +1,23 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3 uid="uid://b_aserradero_def"]
+
+[ext_resource type="Script" uid="uid://ctucq26cgi5hk" path="res://scripts/BuildingDef.gd" id="1_def"]
+
+[resource]
+script = ExtResource("1_def")
+id = &"aserradero"
+display_name = "Aserradero"
+description = "Cabaña abierta con mesa de corte. Convierte tiempo en madera."
+cost = {
+"madera": 30.0
+}
+prod_resource = &"madera"
+prod_amount = 2.0
+prod_interval = 5.0
+footprint = 1.1
+biomes = Array[int]([1])
+hint = "+2 madera / 5s"
+color = Color(0.62, 0.42, 0.22, 1)
+capacity = 0
+capacity_resource = &""
+worker_count = 2
+worker_names = PackedStringArray("Leñador", "Carpintero")

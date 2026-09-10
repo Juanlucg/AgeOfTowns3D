@@ -1,0 +1,24 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3 uid="uid://b_almacen_def"]
+
+[ext_resource type="Script" uid="uid://ctucq26cgi5hk" path="res://scripts/BuildingDef.gd" id="1_def"]
+
+[resource]
+script = ExtResource("1_def")
+id = &"almacen"
+display_name = "Almacén"
+description = "Almacén general para madera, piedra y otras materias primas. Los graneros guardan solo comida; los almacenes guardan el resto."
+cost = {
+"madera": 30.0,
+"piedra": 20.0
+}
+prod_resource = &""
+prod_amount = 0.0
+prod_interval = 0.0
+footprint = 1.1
+biomes = Array[int]([0])
+hint = "+200 capacidad resto"
+color = Color(0.65, 0.55, 0.4, 1)
+capacity = 0
+capacity_resource = &""
+worker_count = 1
+worker_names = PackedStringArray("Almacenero")

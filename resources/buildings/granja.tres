@@ -1,0 +1,23 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3 uid="uid://b_granja_def"]
+
+[ext_resource type="Script" uid="uid://ctucq26cgi5hk" path="res://scripts/BuildingDef.gd" id="1_def"]
+
+[resource]
+script = ExtResource("1_def")
+id = &"granja"
+display_name = "Granja"
+description = "Casita de campo con una parcela cultivable. Produce comida segun el tamano del campo."
+cost = {
+"madera": 25.0
+}
+prod_resource = &"comida"
+prod_amount = 2.0
+prod_interval = 5.0
+footprint = 1.0
+biomes = Array[int]([0])
+hint = "casita + campo a elegir"
+color = Color(0.55, 0.72, 0.3, 1)
+capacity = 0
+capacity_resource = &""
+worker_count = 3
+worker_names = PackedStringArray("Campesino", "Jornalero", "Granjero")
