@@ -74,6 +74,9 @@ var _field_crop := "trigo"
 var _field_ghost: Node3D = null
 var _field_farm: BuildingRecord = null
 var _field_yaw := 0.0
+# Mientras el usuario mantiene R, la rotacion es manual y NO debe
+# sobreescribirse con el face-camera automatico al soltar.
+var _user_rotated := false
 
 # Edificio actualmente seleccionado (para demolir con Delete). Null = nada.
 var _selected: BuildingRecord = null
@@ -360,6 +363,9 @@ func select(id_str: String) -> void:
 	# Yaw inicial: 0. _process() la actualiza cada frame para que la cara
 	# del edificio siga a la camara segun la posicion del cursor.
 	_yaw = 0.0
+	# Nueva colocacion = el usuario quiere la orientacion por defecto (cara
+	# a camara). Si antes habia rotado manualmente con R, se reinicia.
+	_user_rotated = false
 	_ghost_last_ground = Vector2(INF, INF)
 	_ghost = Node3D.new()
 	_ghost_building = BuildingMeshes.build(id, _ghost_mat_ok)
@@ -390,11 +396,14 @@ func _process(delta: float) -> void:
 	if _pending == &"" or _ghost == null:
 		return
 	var ground: Vector2 = _cam_rig.screen_to_ground(get_viewport().get_mouse_position())
-	# Yaw: si el usuario mantiene R rota manualmente; si no, la cara sigue
-	# a la camara segun la posicion del cursor (el edificio mira al jugador).
+	# Yaw: R = rotacion manual del usuario (persiste al soltar). Si no se ha
+	# rotado manualmente, la cara del edificio sigue a la camara. Una vez
+	# que el usuario toca R, _user_rotated=true y el auto-face se desactiva
+	# hasta que vuelva a seleccionar el tipo (en select() reseteamos).
 	if Input.is_action_pressed("rotate_building"):
 		_yaw = fmod(_yaw + ROTATE_SPEED * delta, 360.0)
-	elif _cam_rig != null:
+		_user_rotated = true
+	elif not _user_rotated and _cam_rig != null:
 		var cam_pos := _cam_rig.global_position
 		var dir := cam_pos - Vector3(ground.x, 0, ground.y)
 		if dir.length_squared() > 0.0001:
