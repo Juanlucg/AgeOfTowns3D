@@ -479,7 +479,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		if _field_mode:
 			_cancel_field()
 		elif _pending != &"":
-			deselect()
+			cancel_placement()
 		else:
 			deselect()
 		get_viewport().set_input_as_handled()
@@ -501,7 +501,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			return
 		if _pending != &"" and btn.pressed:
 			if btn.button_index == MOUSE_BUTTON_RIGHT:
-				deselect()
+				cancel_placement()
 				get_viewport().set_input_as_handled()
 			elif btn.button_index == MOUSE_BUTTON_LEFT:
 				_place()
