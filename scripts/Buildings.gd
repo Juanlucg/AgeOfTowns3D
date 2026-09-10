@@ -39,8 +39,8 @@ const FIELD_RATE := 0.4
 ## huerto, para que se lean como dos cosas separadas.
 const FIELD_HOUSE_GAP := 0.4
 const STONE_COLOR := Color(0.58, 0.55, 0.49)   # gris arenoso: el gris neutro
-                                               # se volvia azul con la luz
-                                               # ambiental de primavera
+											   # se volvia azul con la luz
+											   # ambiental de primavera
 const DEMOLISH_REFUND := 0.5   # fraccion del coste que se devuelve
 
 const CROP_COLORS := {
@@ -357,20 +357,9 @@ func select(id_str: String) -> void:
 		return
 	cancel_placement()
 	_pending = id
-	# Orientacion inicial: la cara del edificio mira a la camara.
-	# Se calcula DESDE el origen del mundo + posicion del mouse: asi la
-	# fachada queda visible aunque el cursor este a un lado del edificio.
+	# Yaw inicial: 0. _process() la actualiza cada frame para que la cara
+	# del edificio siga a la camara segun la posicion del cursor.
 	_yaw = 0.0
-	if _cam_rig != null:
-		var mouse_ground := _cam_rig.screen_to_ground(get_viewport().get_mouse_position())
-		var face_pos := Vector3(mouse_ground.x, 0, mouse_ground.y)
-		var cam_pos := _cam_rig.global_position
-		var dir := cam_pos - Vector3(face_pos.x, 0, face_pos.z)
-		if dir.length_squared() > 0.0001:
-			dir.y = 0
-			dir = dir.normalized()
-			# atan2 devuelve RADIANES y _yaw esta en grados en todo el fichero.
-			_yaw = rad_to_deg(atan2(dir.x, dir.z))
 	_ghost_last_ground = Vector2(INF, INF)
 	_ghost = Node3D.new()
 	_ghost_building = BuildingMeshes.build(id, _ghost_mat_ok)
@@ -400,9 +389,18 @@ func _process(delta: float) -> void:
 		return
 	if _pending == &"" or _ghost == null:
 		return
+	var ground: Vector2 = _cam_rig.screen_to_ground(get_viewport().get_mouse_position())
+	# Yaw: si el usuario mantiene R rota manualmente; si no, la cara sigue
+	# a la camara segun la posicion del cursor (el edificio mira al jugador).
 	if Input.is_action_pressed("rotate_building"):
 		_yaw = fmod(_yaw + ROTATE_SPEED * delta, 360.0)
-	var ground: Vector2 = _cam_rig.screen_to_ground(get_viewport().get_mouse_position())
+	elif _cam_rig != null:
+		var cam_pos := _cam_rig.global_position
+		var dir := cam_pos - Vector3(ground.x, 0, ground.y)
+		if dir.length_squared() > 0.0001:
+			dir.y = 0
+			dir = dir.normalized()
+			_yaw = rad_to_deg(atan2(dir.x, dir.z))
 	var d := get_def(_pending)
 	var base_h := _base_height(ground, d.footprint)
 	_ghost.position = Vector3(ground.x, base_h, ground.y)
