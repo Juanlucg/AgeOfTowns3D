@@ -119,8 +119,12 @@ func _choose_target() -> void:
 		_set_navigation_target()
 		return
 	var side := Vector2(-home_exit_direction.y, home_exit_direction.x)
-	_target = home_door_position + home_exit_direction * randf_range(0.8, WANDER_RADIUS) \
-		+ side * randf_range(-1.0, 1.0)
+	for _attempt in 8:
+		var candidate := home_door_position + home_exit_direction * randf_range(0.8, WANDER_RADIUS) \
+			+ side * randf_range(-1.0, 1.0)
+		if not Terrain.is_water(candidate):
+			_target = candidate
+			break
 	_set_navigation_target()
 
 

@@ -707,6 +707,10 @@ func _confirm_field() -> void:
 	# El campo va suelto en el mundo, no colgado de la casita. Se guarda la
 	# referencia en el record para que demolish() lo libere con ella.
 	add_child(field)
+	var field_obstacle := NavigationObstacle3D.new()
+	field_obstacle.radius = rect.size.length() * 0.5
+	field_obstacle.height = 0.6
+	field.add_child(field_obstacle)
 	_field_farm.field = field
 	# Caja envolvente del campo, para poder clicar en cualquier parte de el y
 	# seleccionar la granja. Ahora el campo puede estar girado, asi que se
