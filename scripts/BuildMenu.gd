@@ -9,7 +9,7 @@ class_name BuildMenu
 const UIStyle := preload("res://scripts/UIStyle.gd")
 const BuildingTooltip := preload("res://scripts/BuildingTooltip.gd")
 
-const TYPE_KEYS: Array[StringName] = [&"granero", &"granja", &"aserradero", &"cantera", &"almacen"]
+const TYPE_KEYS: Array[StringName] = [&"granero", &"granja", &"casa", &"aserradero", &"cantera", &"almacen"]
 
 var _buttons := {}
 var _group := ButtonGroup.new()
@@ -55,9 +55,9 @@ func _ready() -> void:
 		var b := Button.new()
 		b.toggle_mode = true
 		b.button_group = _group
-		b.custom_minimum_size = Vector2(170, 74)
+		b.custom_minimum_size = Vector2(145, 64)
 		b.text = "%s\n%s\ncosto: %s" % [d.display_name, d.hint, d.cost_text()]
-		b.add_theme_font_size_override("font_size", 13)
+		b.add_theme_font_size_override("font_size", 12)
 		b.pressed.connect(_on_pressed.bind(id))
 		b.mouse_entered.connect(_on_button_hover.bind(id))
 		b.mouse_exited.connect(_on_button_unhover)
@@ -65,7 +65,7 @@ func _ready() -> void:
 		_buttons[id] = b
 
 	_hint = Label.new()
-	_hint.text = "1-5: elegir edificio   |   clic: colocar   |   mantener R: rotar   |   Esc o clic der.: cancelar   |   Delete: demoler seleccionado"
+	_hint.text = "1-6: elegir edificio   |   clic: colocar   |   mantener R: rotar   |   Esc o clic der.: cancelar   |   Delete: demoler seleccionado"
 	_hint.add_theme_font_size_override("font_size", 12)
 	_hint.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
 	_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -100,8 +100,18 @@ func _on_button_hover(id: StringName) -> void:
 	var d := _buildings.get_def(id)
 	if d == null:
 		return
+	var button := _buttons[id] as Button
+	_tooltip.show_for(d, Vector2.ZERO)
+	await get_tree().process_frame
+	if not is_instance_valid(button) or not is_instance_valid(_tooltip):
+		return
+	var pos := button.global_position + Vector2(
+		(button.size.x - _tooltip.size.x) * 0.5,
+		-_tooltip.size.y - 8.0)
 	var vp := get_viewport().get_visible_rect().size
-	_tooltip.show_for(d, Vector2(vp.x - _tooltip.size.x - 20, 20))
+	pos.x = clampf(pos.x, 8.0, maxf(8.0, vp.x - _tooltip.size.x - 8.0))
+	pos.y = maxf(8.0, pos.y)
+	_tooltip.position = pos
 
 
 func _on_button_unhover() -> void:

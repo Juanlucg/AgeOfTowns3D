@@ -25,6 +25,7 @@ enum Biome { LLANURA = 0, BOSQUE = 1, MONTANA = 2 }
 # Numero de trabajadores mostrados en el menu. 0 = sin panel de trabajadores.
 @export var worker_count: int = 0
 @export var worker_names: PackedStringArray = PackedStringArray()
+@export var housing_capacity: int = 0
 
 
 # Helpers que Buildings.gd usaba implicitamente.

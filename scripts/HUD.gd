@@ -1,7 +1,7 @@
 extends CanvasLayer
 class_name HUD
 ## Interfaz de estado global (esquina superior izquierda): estacion, dia,
-## hora, fase del dia, clima y panel de economia.
+## fase del dia, clima y panel de economia.
 ##
 ## Se actualiza con la senal [signal DayNightCycle.time_changed] (~10 Hz)
 ## en vez de polleo por frame.
@@ -23,7 +23,6 @@ var _day: DayNightCycle
 var _season_color: ColorRect
 var _season_label: Label
 var _day_label: Label
-var _time_label: Label
 var _phase_label: Label
 var _weather_label: Label
 var _last_key := ""
@@ -64,8 +63,6 @@ func _ready() -> void:
 
 	_day_label = _label(14)
 	vbox.add_child(_day_label)
-	_time_label = _label(22, true)
-	vbox.add_child(_time_label)
 	_phase_label = _label(14)
 	vbox.add_child(_phase_label)
 	_weather_label = _label(14)
@@ -139,7 +136,6 @@ func _on_time_changed(day: int, season: int, hour: float, weather_name: String) 
 	_season_color.color = SEASON_COLORS[season]
 	_season_label.text = _day.get_season_name()
 	_day_label.text = "Día %d" % day
-	_time_label.text = _fmt_hour(hour)
 	_phase_label.text = _phase(hour)
 	_weather_label.text = weather_name
 
@@ -187,12 +183,6 @@ func _fmt_rate(r: float) -> String:
 	if r >= 1.0:
 		return "%.1f" % r
 	return "%.2f" % r
-
-
-func _fmt_hour(h: float) -> String:
-	var hh := int(floor(h))
-	var mm := int(floor((h - hh) * 60.0))
-	return "%02d:%02d" % [hh, mm]
 
 
 func _phase(h: float) -> String:

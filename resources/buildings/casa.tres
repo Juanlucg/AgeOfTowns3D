@@ -1,0 +1,25 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/BuildingDef.gd" id="1_def"]
+
+[resource]
+script = ExtResource("1_def")
+id = &"casa"
+display_name = "Casa"
+description = "Vivienda para una familia de aldeanos."
+cost = {
+"madera": 30.0,
+"piedra": 10.0
+}
+prod_resource = &""
+prod_amount = 0.0
+prod_interval = 0.0
+footprint = 3.0
+biomes = Array[int]([0])
+hint = "Vivienda de aldeanos"
+color = Color(0.72, 0.46, 0.28, 1)
+capacity = 0
+capacity_resource = &""
+worker_count = 0
+worker_names = PackedStringArray()
+housing_capacity = 4

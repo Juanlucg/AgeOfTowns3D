@@ -8,12 +8,13 @@ const _BIOME_NAMES := {0: "llanura", 1: "bosque", 2: "montaña"}
 
 func show_for(def: BuildingDef, at: Vector2) -> void:
 	_clear()
+	custom_minimum_size = Vector2(210, 0)
 	var vbox := VBoxContainer.new()
 	vbox.add_theme_constant_override("separation", 4)
 	add_child(vbox)
 	var title := Label.new()
 	title.text = def.display_name
-	title.add_theme_font_size_override("font_size", 14)
+	title.add_theme_font_size_override("font_size", 12)
 	title.add_theme_color_override("font_color", def.color)
 	vbox.add_child(title)
 	_add_row(vbox, "Coste", def.cost_text())
@@ -41,13 +42,13 @@ func _add_row(parent: Container, label: String, value: String) -> void:
 	if label != "":
 		var l := Label.new()
 		l.text = label + ":"
-		l.add_theme_font_size_override("font_size", 12)
+		l.add_theme_font_size_override("font_size", 11)
 		l.add_theme_color_override("font_color", Color(1, 1, 1, 0.65))
-		l.custom_minimum_size = Vector2(70, 0)
+		l.custom_minimum_size = Vector2(58, 0)
 		row.add_child(l)
 	var v := Label.new()
 	v.text = value
-	v.add_theme_font_size_override("font_size", 12)
+	v.add_theme_font_size_override("font_size", 11)
 	row.add_child(v)
 
 

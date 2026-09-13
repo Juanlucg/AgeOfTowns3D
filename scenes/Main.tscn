@@ -9,10 +9,11 @@
 [ext_resource type="Script" uid="uid://c0ubxnwo725t5" path="res://scripts/Buildings.gd" id="7_build"]
 [ext_resource type="Script" uid="uid://dqmn4la1ff0rh" path="res://scripts/HUD.gd" id="8_hud"]
 [ext_resource type="Script" uid="uid://bwrau7rfak1y3" path="res://scripts/BuildMenu.gd" id="10_menu"]
-[ext_resource type="Script" path="res://scripts/dev/DevTools.gd" id="11_dev"]
-[ext_resource type="Script" path="res://scripts/Main.gd" id="12_main"]
-[ext_resource type="Script" path="res://scripts/BuildingInfoMenu.gd" id="13_info"]
-[ext_resource type="Script" path="res://scripts/OpenSea.gd" id="14_sea"]
+[ext_resource type="Script" uid="uid://1qd3vra2viqk" path="res://scripts/dev/DevTools.gd" id="11_dev"]
+[ext_resource type="Script" uid="uid://bsk5ktpw6ibv8" path="res://scripts/Main.gd" id="12_main"]
+[ext_resource type="Script" uid="uid://cf63olqimt2vs" path="res://scripts/BuildingInfoMenu.gd" id="13_info"]
+[ext_resource type="Script" uid="uid://bw5xels6vxjec" path="res://scripts/OpenSea.gd" id="14_sea"]
+[ext_resource type="Script" uid="uid://bj7q14ed3o2iu" path="res://scripts/Villagers.gd" id="15_villagers"]
 
 [node name="Main" type="Node3D" unique_id=1696096527]
 script = ExtResource("12_main")
@@ -24,7 +25,7 @@ shadow_enabled = true
 [node name="Ground" type="MeshInstance3D" parent="." unique_id=1678041047]
 script = ExtResource("1_mesh")
 
-[node name="OpenSea" type="MeshInstance3D" parent="."]
+[node name="OpenSea" type="MeshInstance3D" parent="." unique_id=344082692]
 script = ExtResource("14_sea")
 
 [node name="CameraRig" type="Node3D" parent="." unique_id=543882290]
@@ -48,6 +49,11 @@ script = ExtResource("5_rocks")
 [node name="Buildings" type="Node3D" parent="." unique_id=1881301566]
 script = ExtResource("7_build")
 camera_path = NodePath("../CameraRig")
+
+[node name="Villagers" type="Node3D" parent="." unique_id=1881301567]
+script = ExtResource("15_villagers")
+buildings_path = NodePath("../Buildings")
+day_night_path = NodePath("../DayNightCycle")
 
 [node name="MinimapLayer" type="CanvasLayer" parent="." unique_id=22199242]
 
@@ -75,7 +81,7 @@ script = ExtResource("11_dev")
 day_night_path = NodePath("../DayNightCycle")
 buildings_path = NodePath("../Buildings")
 
-[node name="InfoLayer" type="CanvasLayer" parent="." unique_id=2222222222]
+[node name="InfoLayer" type="CanvasLayer" parent="." unique_id=-2072745074]
 
 [node name="BuildingInfoMenu" type="PanelContainer" parent="InfoLayer" unique_id=1111111111]
 script = ExtResource("13_info")

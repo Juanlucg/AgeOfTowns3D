@@ -15,6 +15,7 @@ extends Node3D
 @onready var day_night: DayNightCycle = $DayNightCycle
 @onready var camera: CameraController3D = $CameraRig
 @onready var buildings: Buildings = $Buildings
+@onready var villagers: Villagers = $Villagers
 @onready var vegetation: Vegetation = $Vegetation
 @onready var rocks: Rocks = $Rocks
 @onready var hud: HUD = $HUD
@@ -34,6 +35,7 @@ func _ready() -> void:
 	info_menu.bind(buildings)
 	buildings.building_focus_changed.connect(_on_building_focus)
 	buildings.building_demolished.connect(minimap._on_building_demolished)
+	villagers.message_requested.connect(hud.show_message)
 
 
 func _on_building_focus(rec: BuildingRecord, screen_pos: Vector2) -> void:

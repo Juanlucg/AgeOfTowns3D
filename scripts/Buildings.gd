@@ -30,7 +30,7 @@ signal place_clear_requested(pos: Vector2, radius: float)
 const GHOST_OK := Color(0.30, 1.0, 0.45, 0.45)
 const GHOST_BAD := Color(1.0, 0.30, 0.30, 0.45)
 const SELECT_COLOR := Color(1.0, 0.85, 0.2, 0.55)
-const FOUNDATION_STEP := 1.0
+const HEIGHT_SAMPLE_STEP := 1.0
 const ROTATE_SPEED := 120.0
 const FIELD_MIN := 1.2
 const FIELD_MAX_AREA := 60.0
@@ -64,7 +64,6 @@ var _pending: StringName = &""
 var _yaw := 0.0
 var _ghost: Node3D = null
 var _ghost_building: Node3D = null
-var _ghost_foundation: Node3D = null
 var _placed: Array[BuildingRecord] = []
 # Spatial hash: para evitar el O(N) de building_at/_is_valid.
 # cell_size >= footprint_max + hit_radius = ~3 + 1.5 + margen.
@@ -116,6 +115,7 @@ func _register_defs() -> void:
 	# anadir un edificio o tunear produccion ya no requiere compilar.
 	_register(preload("res://resources/buildings/granero.tres"))
 	_register(preload("res://resources/buildings/granja.tres"))
+	_register(preload("res://resources/buildings/casa.tres"))
 	_register(preload("res://resources/buildings/aserradero.tres"))
 	_register(preload("res://resources/buildings/cantera.tres"))
 	_register(preload("res://resources/buildings/almacen.tres"))
@@ -261,29 +261,26 @@ func toggle_select(rec: BuildingRecord) -> void:
 	building_focus_changed.emit(_selected, screen)
 
 
-# OJO: a dia de hoy no la llama nadie, ni a ella ni a _face_ghost_to_camera().
-# Ademas la direccion se mide desde el ORIGEN DEL MUNDO hasta la camara, no
-# desde el edificio: para una casa en (150,150) el angulo sale practicamente
-# igual la pongas donde la pongas. Si quieres revivir la funcion, hay que
-# medir cam_pos - posicion_del_edificio, que es lo que si hace bien
-# _face_ghost_to_camera().
-#
-# Rota la yaw actual para que la cara del edificio (su +Z local, donde
-# esta la puerta) apunte a la camara. Se llama al COLOCAR el edificio
-# (no al clicar uno existente), de modo que el jugador siempre ve la
-# fachada del edificio que acaba de poner. Tambien se aplica al fantasma
-# durante la colocacion para que el preview muestre la orientacion final.
+# Rota el edificio para que su fachada (el -Z local, donde esta la puerta)
+# apunte a la camara real, no al pivote de la camara.
 func _face_camera_now() -> void:
 	if _cam_rig == null:
 		return
-	var cam_pos := _cam_rig.global_position
+	var cam_pos := _camera_world_position()
 	# El fantasma (si esta activo) rota con la yaw actual.
 	if _ghost != null:
 		_face_ghost_to_camera(cam_pos)
 	# Yaw por defecto al colocar: hacia la camara.
 	if cam_pos.length_squared() > 0.0001:
 		var dir := Vector3(cam_pos.x, 0, cam_pos.z).normalized()
-		_yaw = rad_to_deg(atan2(dir.x, dir.z))
+		_yaw = rad_to_deg(atan2(dir.x, dir.z)) + 180.0
+
+
+func _camera_world_position() -> Vector3:
+	var camera := _cam_rig.get_node_or_null("Camera3D") as Camera3D
+	if camera != null:
+		return camera.global_position
+	return _cam_rig.global_position
 
 
 func _face_ghost_to_camera(cam_pos: Vector3) -> void:
@@ -294,10 +291,8 @@ func _face_ghost_to_camera(cam_pos: Vector3) -> void:
 	dir.y = 0
 	dir = dir.normalized()
 	# Se escribe en _yaw (grados) en vez de girar _ghost directamente: la raiz
-	# del fantasma no debe rotar, porque de ella cuelga la cimentacion, que se
-	# muestrea sobre una rejilla alineada con los ejes del mundo. _process se
-	# encarga de aplicar la yaw al cuerpo.
-	_yaw = rad_to_deg(atan2(dir.x, dir.z))
+	# del fantasma no debe rotar para que el cuerpo mantenga su orientacion.
+	_yaw = rad_to_deg(atan2(dir.x, dir.z)) + 180.0
 
 
 func deselect() -> void:
@@ -394,12 +389,9 @@ func select(id_str: String) -> void:
 	_ghost_last_ground = Vector2(INF, INF)
 	_ghost = Node3D.new()
 	_ghost_building = BuildingMeshes.build(id, _ghost_mat_ok)
-	# Solo gira el cuerpo, no la raiz: la cimentacion se muestrea sobre una
-	# rejilla alineada con los ejes del mundo.
+	# Solo gira el cuerpo, no la raiz.
 	_ghost_building.rotation = Vector3(0.0, deg_to_rad(_yaw), 0.0)
 	_ghost.add_child(_ghost_building)
-	_ghost_foundation = Node3D.new()
-	_ghost.add_child(_ghost_foundation)
 	add_child(_ghost)
 	selection_changed.emit(id)
 
@@ -410,7 +402,6 @@ func cancel_placement() -> void:
 		_ghost.queue_free()
 		_ghost = null
 		_ghost_building = null
-		_ghost_foundation = null
 	selection_changed.emit(&"")
 
 
@@ -429,7 +420,7 @@ func _process(delta: float) -> void:
 		_yaw = fmod(_yaw + ROTATE_SPEED * delta, 360.0)
 		_user_rotated = true
 	elif not _user_rotated and _cam_rig != null:
-		var cam_pos := _cam_rig.global_position
+		var cam_pos := _camera_world_position()
 		var dir := cam_pos - Vector3(ground.x, 0, ground.y)
 		if dir.length_squared() > 0.0001:
 			dir.y = 0
@@ -441,29 +432,19 @@ func _process(delta: float) -> void:
 	var d := get_def(_pending)
 	var base_h := _base_height(ground, d.footprint)
 	_ghost.position = Vector3(ground.x, base_h, ground.y)
-	# Solo gira el cuerpo: la cimentacion se muestrea alineada con el mundo.
+	# Solo gira el cuerpo.
 	_ghost_building.rotation = Vector3(0.0, deg_to_rad(_yaw), 0.0)
 	var valid := _is_valid(ground, _pending)
-	# Reconstruir la cimentacion son ~25 MeshInstance3D + BoxMesh nuevos, y
-	# solo cambia si el raton se ha movido o si la validez ha cambiado. Antes
-	# se tiraba y se rehacia entera en cada frame aunque el raton estuviera
-	# quieto (el yaw no la afecta: ya no rota con el edificio).
 	if valid == _ghost_last_valid and ground.is_equal_approx(_ghost_last_ground):
 		return
 	_ghost_last_valid = valid
 	_ghost_last_ground = ground
 	var mat := _ghost_mat_ok if valid else _ghost_mat_bad
 	_update_ghost_material(mat)
-	for c in _ghost_foundation.get_children():
-		_ghost_foundation.remove_child(c)
-		c.queue_free()
-	_ghost_foundation.add_child(_make_foundation(ground, d.footprint, base_h, mat))
 
 
 func _update_ghost_material(m: Material) -> void:
-	for c in _ghost_building.get_children():
-		if c is MeshInstance3D:
-			(c as MeshInstance3D).material_override = m
+	BuildingMeshes.apply_material_recursive(_ghost_building, m)
 
 
 func _attach_production_timer(rec: BuildingRecord) -> void:
@@ -578,14 +559,12 @@ func _place() -> void:
 	if d.can_produce() and not dev_free_build:
 		Economy.add_production(d.prod_resource, d.prod_amount / d.prod_interval)
 	var base_h := _base_height(ground, d.footprint)
-	# Raiz sin rotar apoyada en el punto de apoyo: el cuerpo gira con el yaw,
-	# la cimentacion no (sus pilares siguen la rejilla del terreno).
+	# Raiz sin rotar apoyada en el punto de apoyo; el cuerpo gira con el yaw.
 	var node := Node3D.new()
 	node.position = Vector3(ground.x, base_h, ground.y)
 	var body := BuildingMeshes.build(_pending, null)
 	body.rotation = Vector3(0.0, deg_to_rad(_yaw), 0.0)
 	node.add_child(body)
-	node.add_child(_make_foundation(ground, d.footprint, base_h, null))
 	add_child(node)
 	var rec := BuildingRecord.new(_pending, ground, _yaw, node, dev_free_build)
 	_placed.append(rec)
@@ -620,17 +599,10 @@ func _field_back() -> Vector2:
 # Cuanto hay que separar el borde sembrado del centro de la casa para que la
 # casa quede fuera del huerto por completo.
 #
-# Antes era un 0.6 fijo sumado a medio footprint, que no daba: la losa de
-# cimentacion sobresale otro 0.25 por lado, y FieldMesh rodea los cultivos de
-# tierra desnuda y redondea a celdas enteras. El resultado era que la casa
-# acababa siempre dentro del huerto, atravesada por la valla.
+# FieldMesh rodea los cultivos de tierra desnuda y redondea a celdas enteras.
+# El margen mantiene la casa fuera del huerto.
 func _field_offset(d: BuildingDef, back: Vector2) -> float:
-	# La losa de cimentacion es un cuadrado alineado con los ejes del mundo, no
-	# gira con la casa. Lo que sobresale en la direccion `back` es
-	# media_anchura * (|back.x| + |back.y|): con la granja a 45 grados, la
-	# esquina de la losa esta un 41% mas lejos que su lado. Sin esto el hueco
-	# se comia justo en las diagonales (medido: 0,06 m a 45 grados).
-	var house_reach := (d.footprint + 0.5) * 0.5 * (absf(back.x) + absf(back.y))
+	var house_reach := d.footprint * 0.5 * (absf(back.x) + absf(back.y))
 	# FieldMesh rodea los cultivos de tierra desnuda y redondea a celdas
 	# enteras, asi que por cada lado puede crecer hasta MARGIN + CELL/2.
 	var soil_pad := FieldMesh.MARGIN + FieldMesh.CELL * 0.5
@@ -798,53 +770,9 @@ func _base_height(pos: Vector2, footprint: float) -> float:
 		var x := -half
 		while x <= half:
 			h = maxf(h, Terrain.height_at(pos + Vector2(x, y)))
-			x += FOUNDATION_STEP
-		y += FOUNDATION_STEP
+			x += HEIGHT_SAMPLE_STEP
+		y += HEIGHT_SAMPLE_STEP
 	return h
-
-
-# Losa de piedra bajo el edificio y, donde el terreno baja, pilares/pared de
-# piedras que rellenan hasta el suelo real.
-#
-# IMPORTANTE: devuelve geometria en espacio LOCAL, relativa al origen del
-# edificio (pos.x, base_h, pos.y). `pos` y `base_h` solo se usan para muestrear
-# el terreno, nunca para posicionar. Antes se devolvian coordenadas absolutas
-# y el nodo se colgaba de un padre ya trasladado a esa misma posicion, asi que
-# la cimentacion acababa dibujada al doble de coordenadas (un edificio en
-# 150,150 plantaba su losa en 300,300).
-#
-# El nodo devuelto NO debe rotarse con el edificio: los pilares se muestrean
-# en una rejilla alineada con los ejes del mundo.
-func _make_foundation(pos: Vector2, footprint: float, base_h: float, mat: Material) -> Node3D:
-	var n := Node3D.new()
-	var stone := mat if mat != null else BuildingMeshes._mat(STONE_COLOR)
-	var slab := MeshInstance3D.new()
-	var sm := BoxMesh.new()
-	sm.size = Vector3(footprint + 0.5, 0.3, footprint + 0.5)
-	slab.mesh = sm
-	slab.material_override = stone
-	slab.position = Vector3(0.0, -0.15, 0.0)
-	n.add_child(slab)
-	var step := 0.5
-	var half := footprint * 0.5 + 0.25
-	var y := -half
-	while y <= half:
-		var x := -half
-		while x <= half:
-			var h: float = Terrain.height_at(pos + Vector2(x, y))
-			var dh: float = base_h - h - 0.15
-			if dh > 0.08:
-				var col := MeshInstance3D.new()
-				var cm := BoxMesh.new()
-				cm.size = Vector3(step * 1.05, dh, step * 1.05)
-				col.mesh = cm
-				col.material_override = stone
-				col.position = Vector3(x, h - base_h + dh * 0.5 + 0.05, y)
-				n.add_child(col)
-			x += step
-		y += step
-	return n
-
 
 func _is_valid(pos: Vector2, type: StringName) -> bool:
 	var d := get_def(type)

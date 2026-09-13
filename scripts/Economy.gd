@@ -32,13 +32,12 @@ const RESOURCE_COLORS := {
 const BASE_STORAGE := 200.0          # base comun para comida y resto
 const GRANARY_STORAGE := 50.0       # +50 comida por granero
 const WAREHOUSE_STORAGE := 200.0    # +200 al resto por almacen
-const DAILY_FOOD := 3.0
 # Comida va al granero; el resto al almacen tradicional. Si anades un
 # recurso nuevo (herramientas, etc.) que no sea "comida", va al almacen
 # tradicional sin bonificacion.
 const FOOD_RESOURCE := "comida"
 
-var amounts := {"madera": 40.0, "piedra": 25.0, "comida": 20.0}
+var amounts := {"madera": 60.0, "piedra": 25.0, "comida": 20.0}
 var granary_count := 0
 var warehouse_count := 0
 # Produccion neta por recurso en unidades/segundo. La mantienen los
@@ -49,11 +48,7 @@ var _day_night: DayNightCycle = null
 
 
 func bind_day_night(dn: DayNightCycle) -> void:
-	if _day_night != null:
-		_day_night.day_changed.disconnect(_on_day_changed)
 	_day_night = dn
-	if _day_night != null:
-		_day_night.day_changed.connect(_on_day_changed)
 
 
 # Capacidad POR RECURSO. La comida crece con graneros; el resto con almacenes.
@@ -105,6 +100,17 @@ func spend(type: String, amount: float) -> bool:
 	return true
 
 
+func consume_food(amount: float) -> bool:
+	if amount <= 0.0:
+		return true
+	var available: float = amounts.get(FOOD_RESOURCE, 0.0)
+	var consumed := minf(available, amount)
+	amounts[FOOD_RESOURCE] = available - consumed
+	if consumed > 0.0:
+		changed.emit()
+	return consumed >= amount
+
+
 func can_afford(cost: Dictionary) -> bool:
 	for k in cost:
 		if amounts.get(k, 0.0) < cost[k]:
@@ -144,8 +150,3 @@ func remove_production(resource: StringName, rate: float) -> void:
 
 func production_rate(resource: StringName) -> float:
 	return _production_rates.get(resource, 0.0)
-
-
-func _on_day_changed(day: int) -> void:
-	if day > 0:
-		add(FOOD_RESOURCE, DAILY_FOOD)

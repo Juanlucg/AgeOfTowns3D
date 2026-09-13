@@ -24,7 +24,7 @@ func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	visible = false
 	z_index = 100
-	custom_minimum_size = Vector2(320, 0)
+	custom_minimum_size = Vector2(260, 0)
 	var sb := StyleBoxFlat.new()
 	sb.bg_color = Color(0.10, 0.10, 0.14, 0.95)
 	sb.border_color = Color(0.4, 0.4, 0.45, 1.0)
@@ -93,7 +93,7 @@ func show_for(record: BuildingRecord, at: Vector2) -> void:
 	await get_tree().process_frame
 	# Posicion: a la derecha del edificio, dentro del viewport.
 	var vp := get_viewport_rect().size
-	var pos := at + Vector2(20, -size.y * 0.5)
+	var pos := at + Vector2(-size.x * 0.5, -size.y - 16)
 	pos.x = clampf(pos.x, 8, maxf(8.0, vp.x - size.x - 8.0))
 	pos.y = clampf(pos.y, 8, maxf(8.0, vp.y - size.y - 8.0))
 	position = pos
@@ -138,7 +138,7 @@ func _build_header(parent: VBoxContainer, def: BuildingDef) -> void:
 	row.add_theme_constant_override("separation", 10)
 	parent.add_child(row)
 	var icon := ColorRect.new()
-	icon.custom_minimum_size = Vector2(56, 56)
+	icon.custom_minimum_size = Vector2(44, 44)
 	icon.color = def.color
 	row.add_child(icon)
 	var title_box := VBoxContainer.new()
@@ -163,7 +163,7 @@ func _build_description(parent: VBoxContainer, text: String) -> void:
 	desc.add_theme_font_size_override("font_size", 12)
 	desc.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
 	desc.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	desc.custom_minimum_size = Vector2(280, 0)
+	desc.custom_minimum_size = Vector2(230, 0)
 	parent.add_child(desc)
 
 

@@ -1,7 +1,7 @@
 extends RefCounted
 class_name BuildingMeshes
 ## Constructores puros de geometria para los edificios del juego
-## (granero, granja, aserradero, cantera). Extraidos de [Buildings]
+## (casa, granero, granja, aserradero, cantera). Extraidos de [Buildings]
 ## para ser testables y reutilizables (fantasmas, catalogo).
 
 const WOOD_COLOR := Color(0.55, 0.38, 0.20)
@@ -20,6 +20,8 @@ const PLASTER_COLOR := Color(0.97, 0.88, 0.68)   # muro encalado, tirando a
                                                  # dejaba gris
 const TIMBER_COLOR := Color(0.30, 0.19, 0.11)    # entramado de madera
 const DOOR_COLOR := Color(0.45, 0.29, 0.15)
+const COTTAGE_SCENE := preload("res://assets/buildings/cottage/cottage.fbx")
+const COTTAGE_SCALE := Vector3(1.5, 1.5, 1.5)
 
 
 # `mat` es el material a aplicar; si es null, se usa el color solido del tipo.
@@ -27,12 +29,35 @@ const DOOR_COLOR := Color(0.45, 0.29, 0.15)
 # recibia String y los dos llamantes pasaban tipos distintos).
 static func build(type: StringName, mat: Material) -> Node3D:
 	match type:
+		&"casa": return house(mat)
 		&"granero": return granary(mat)
 		&"granja": return farm(mat)
 		&"aserradero": return sawmill(mat)
 		&"cantera": return quarry(mat)
 	push_warning("BuildingMeshes.build: tipo desconocido '%s'" % type)
 	return Node3D.new()
+
+
+static func house(mat: Material) -> Node3D:
+	var instance := COTTAGE_SCENE.instantiate() as Node3D
+	if instance == null:
+		push_error("BuildingMeshes.house: el modelo de la casa no es un Node3D")
+		return Node3D.new()
+	instance.scale = COTTAGE_SCALE
+	if mat != null:
+		_apply_material_recursive(instance, mat)
+	return instance
+
+
+static func apply_material_recursive(root: Node, mat: Material) -> void:
+	_apply_material_recursive(root, mat)
+
+
+static func _apply_material_recursive(root: Node, mat: Material) -> void:
+	if root is MeshInstance3D:
+		(root as MeshInstance3D).material_override = mat
+	for child in root.get_children():
+		_apply_material_recursive(child, mat)
 
 
 static func granary(mat: Material) -> Node3D:
@@ -64,8 +89,8 @@ const FARM_WALL_H := 0.56
 # redondeado, a cuatro aguas y volando muy por fuera de los muros. Debajo,
 # yeso claro con entramado de madera sobre un zocalo de piedra.
 #
-# Todo cabe en +-0.75 en X y Z, que es lo que ocupa la losa de cimentacion
-# (footprint 1.0 + 0.5). Si el tejado se saliera de ahi se comeria la
+# Todo cabe en +-0.75 en X y Z, que es lo que ocupa el solar
+# (footprint 1.0 + margen). Si el tejado se saliera de ahi se comeria la
 # separacion con el huerto (ver Buildings._field_offset).
 static func farm(mat: Material) -> Node3D:
 	var n := Node3D.new()
