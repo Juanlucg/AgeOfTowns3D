@@ -17,7 +17,12 @@ var _content: VBoxContainer = null
 var _catcher: ColorRect = null
 var _record: BuildingRecord = null
 var _buildings: Buildings = null
+var _villagers: Villagers = null
+var _last_screen_pos := Vector2.ZERO
 var _demolish_button: Button = null
+var _assign_button: Button = null
+var _release_button: Button = null
+var _worker_status_labels: Array[Label] = []
 
 
 func _ready() -> void:
@@ -37,12 +42,17 @@ func _ready() -> void:
 	add_theme_stylebox_override("panel", sb)
 
 
-func bind(buildings: Buildings) -> void:
+func bind(buildings: Buildings, villagers: Villagers = null) -> void:
 	_buildings = buildings
+	_villagers = villagers
+	if _villagers != null:
+		_villagers.workers_changed.connect(_on_workers_changed)
 
 
 func show_for(record: BuildingRecord, at: Vector2) -> void:
 	_record = record
+	_last_screen_pos = at
+	_worker_status_labels.clear()
 	# Click-catcher fullscreen para absorber clics fuera del menu.
 	if _catcher == null:
 		_catcher = ColorRect.new()
@@ -83,9 +93,7 @@ func show_for(record: BuildingRecord, at: Vector2) -> void:
 		_build_capacity(_content, def.capacity, def.capacity_resource)
 	if def.worker_count > 0:
 		_content.add_child(HSeparator.new())
-		_build_workers(_content, def, record.workers)
-	_content.add_child(HSeparator.new())
-	_build_storage_row(_content)
+		_build_workers(_content, def, record.workers, record.pos)
 	_content.add_child(HSeparator.new())
 	_build_action_bar(_content)
 
@@ -118,12 +126,25 @@ func _input(event: InputEvent) -> void:
 		return
 	if event is InputEventMouseButton and event.pressed \
 			and event.button_index == MOUSE_BUTTON_LEFT:
+		if _assign_button != null and _button_rect(_assign_button).has_point(event.position):
+			if _villagers != null:
+				_villagers.assign_free_worker(_record.pos)
+			get_viewport().set_input_as_handled()
+			return
+		if _release_button != null and _button_rect(_release_button).has_point(event.position):
+			if _villagers != null:
+				_villagers.release_worker(_record.pos)
+			get_viewport().set_input_as_handled()
+			return
 		if _demolish_button != null and is_instance_valid(_demolish_button):
-			var button_rect := Rect2(_demolish_button.global_position, _demolish_button.size)
-			if button_rect.has_point(event.position):
+			if _button_rect(_demolish_button).has_point(event.position):
 				_on_demolish_pressed()
 				get_viewport().set_input_as_handled()
 				return
+
+
+func _button_rect(button: Button) -> Rect2:
+	return Rect2(button.global_position, button.size)
 
 
 func has_record() -> bool:
@@ -195,7 +216,7 @@ func _build_capacity(parent: VBoxContainer, max: int, resource: StringName) -> v
 	row.add_child(value_label)
 
 
-func _build_workers(parent: VBoxContainer, def: BuildingDef, assigned: int) -> void:
+func _build_workers(parent: VBoxContainer, def: BuildingDef, assigned: int, position: Vector2) -> void:
 	var title := Label.new()
 	title.text = "Trabajadores"
 	title.add_theme_font_size_override("font_size", 12)
@@ -225,28 +246,34 @@ func _build_workers(parent: VBoxContainer, def: BuildingDef, assigned: int) -> v
 			"font_color", Color(0.45, 1.0, 0.55) if i < assigned else Color(1.0, 0.75, 0.4))
 		mood.add_theme_font_size_override("font_size", 12)
 		slot.add_child(mood)
+		_worker_status_labels.append(mood)
+	var actions := HBoxContainer.new()
+	actions.add_theme_constant_override("separation", 6)
+	parent.add_child(actions)
+	var assign := Button.new()
+	_assign_button = assign
+	assign.text = "+ Asignar"
+	assign.mouse_filter = Control.MOUSE_FILTER_STOP
+	assign.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	actions.add_child(assign)
+	var release := Button.new()
+	_release_button = release
+	release.text = "- Liberar"
+	release.mouse_filter = Control.MOUSE_FILTER_STOP
+	release.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	actions.add_child(release)
 
 
-func _build_storage_row(parent: VBoxContainer) -> void:
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 12)
-	parent.add_child(row)
-	for k in Economy.RESOURCE_NAMES:
-		var cell := HBoxContainer.new()
-		cell.add_theme_constant_override("separation", 4)
-		row.add_child(cell)
-		var dot := ColorRect.new()
-		dot.custom_minimum_size = Vector2(10, 10)
-		dot.color = Economy.RESOURCE_COLORS.get(k, Color.WHITE)
-		cell.add_child(dot)
-		var amount: int = int(Economy.amounts.get(k, 0.0))
-		# Capacidad POR RECURSO: solo comida crece con graneros.
-		var cap: int = int(Economy.storage_capacity_for(k))
-		var lbl := Label.new()
-		lbl.text = "%s %d/%d" % [k, amount, cap]
-		lbl.add_theme_font_size_override("font_size", 11)
-		lbl.add_theme_color_override("font_color", Color(1, 1, 1, 0.85))
-		cell.add_child(lbl)
+func _on_workers_changed(position: Vector2, count: int) -> void:
+	if _record == null or not _record.pos.is_equal_approx(position):
+		return
+	_record.workers = count
+	for i in _worker_status_labels.size():
+		var assigned := i < count
+		var label := _worker_status_labels[i]
+		label.text = "Asignado" if assigned else "Libre"
+		label.add_theme_color_override(
+			"font_color", Color(0.45, 1.0, 0.55) if assigned else Color(1.0, 0.75, 0.4))
 
 
 func _build_action_bar(parent: VBoxContainer) -> void:

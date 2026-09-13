@@ -12,10 +12,12 @@ const FOOD_PER_VILLAGER_PER_DAY := 1.0
 signal population_changed(population: int, housing: int, workers: int)
 signal message_requested(text: String)
 signal workers_changed(position: Vector2, count: int)
+signal worker_efficiency_changed(position: Vector2, efficiency: float)
 
 var _buildings: Buildings
 var _day_night: DayNightCycle
 var _villagers: Array = []
+var _manual_free: Array = []
 var _house_groups: Dictionary = {}
 var _work_groups: Dictionary = {}
 var _daytime := true
@@ -57,6 +59,7 @@ func _on_building_demolished(type: StringName, pos: Vector2) -> void:
 		for villager in household:
 			if is_instance_valid(villager):
 				_villagers.erase(villager)
+				_manual_free.erase(villager)
 				villager.queue_free()
 		_house_groups.erase(pos)
 	elif _work_groups.has(pos):
@@ -142,27 +145,81 @@ func _house_side_offset(home: Vector2, amount: float) -> Vector2:
 
 
 func _reassign_workers() -> void:
-	for villager in _villagers:
-		if is_instance_valid(villager):
-			villager.clear_work()
 	for group in _work_groups.values():
 		group["workers"] = []
+	for villager in _villagers:
+		if not is_instance_valid(villager) or not villager.is_working():
+			continue
+		var group: Variant = _group_at(villager.work_position)
+		if group == null:
+			villager.clear_work()
+		else:
+			(group["workers"] as Array).append(villager)
+	for group in _work_groups.values():
 		while (group["workers"] as Array).size() < group["capacity"]:
-			var villager = _find_free_villager()
+			var villager: Variant = _find_free_villager()
 			if villager == null:
 				break
 			villager.assign_work(group["position"], group["name"])
 			villager.set_work_schedule(_daytime)
 			(group["workers"] as Array).append(villager)
-		workers_changed.emit(group["position"], (group["workers"] as Array).size())
+		_emit_group_workers(group)
 	_emit_population()
 
 
-func _find_free_villager():
+func assign_free_worker(position: Vector2) -> bool:
+	var group: Variant = _group_at(position)
+	if group == null or (group["workers"] as Array).size() >= group["capacity"]:
+		return false
+	var villager: Variant = _find_free_villager(true)
+	if villager == null:
+		return false
+	_manual_free.erase(villager)
+	villager.assign_work(position, group["name"])
+	villager.set_work_schedule(_daytime)
+	(group["workers"] as Array).append(villager)
+	_emit_group_workers(group)
+	_emit_population()
+	return true
+
+
+func release_worker(position: Vector2) -> bool:
+	var group: Variant = _group_at(position)
+	if group == null or (group["workers"] as Array).is_empty():
+		return false
+	var villager = (group["workers"] as Array).pop_back()
+	villager.clear_work()
+	if not _manual_free.has(villager):
+		_manual_free.append(villager)
+	_emit_group_workers(group)
+	_emit_population()
+	return true
+
+
+func _find_free_villager(include_manual := false) -> Variant:
 	for villager in _villagers:
-		if is_instance_valid(villager) and not villager.is_working():
+		if is_instance_valid(villager) and not villager.is_working() \
+				and (include_manual or not _manual_free.has(villager)):
 			return villager
 	return null
+
+
+func _group_at(position: Vector2) -> Variant:
+	for key in _work_groups:
+		if key.is_equal_approx(position):
+			return _work_groups[key]
+	return null
+
+
+func _emit_group_workers(group: Dictionary) -> void:
+	var workers: Array = group["workers"]
+	workers_changed.emit(group["position"], workers.size())
+	var efficiency := 0.0
+	for villager in workers:
+		efficiency += villager.efficiency()
+	if not workers.is_empty():
+		efficiency /= workers.size()
+	worker_efficiency_changed.emit(group["position"], efficiency)
 
 
 func _emit_population() -> void:

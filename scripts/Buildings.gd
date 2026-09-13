@@ -140,18 +140,42 @@ func set_worker_count(pos: Vector2, count: int) -> void:
 	for rec in _placed:
 		if not rec.pos.is_equal_approx(pos):
 			continue
-		var was_active := rec.workers > 0
+		var old_rate := _worker_production_rate(rec)
 		rec.workers = maxi(0, count)
-		var is_active := rec.workers > 0
 		var d := get_def(rec.type)
-		if d != null and d.can_produce() and not rec.dev and was_active != is_active:
-			var rate := d.prod_amount / d.prod_interval
-			if is_active:
-				Economy.add_production(d.prod_resource, rate)
-			else:
-				Economy.remove_production(d.prod_resource, rate)
+		var new_rate := _worker_production_rate(rec)
+		if d != null and d.can_produce() and not rec.dev and not is_equal_approx(old_rate, new_rate):
+			_update_production_rate(d.prod_resource, new_rate - old_rate)
 			Economy.changed.emit()
 		return
+
+
+func set_worker_efficiency(pos: Vector2, efficiency: float) -> void:
+	for rec in _placed:
+		if not rec.pos.is_equal_approx(pos):
+			continue
+		var old_rate := _worker_production_rate(rec)
+		rec.worker_efficiency = clampf(efficiency, 0.0, 1.0)
+		var d := get_def(rec.type)
+		var new_rate := _worker_production_rate(rec)
+		if d != null and d.can_produce() and not rec.dev and not is_equal_approx(old_rate, new_rate):
+			_update_production_rate(d.prod_resource, new_rate - old_rate)
+			Economy.changed.emit()
+		return
+
+
+func _worker_production_rate(rec: BuildingRecord) -> float:
+	var d := get_def(rec.type)
+	if rec.dev or d == null or not d.can_produce():
+		return 0.0
+	return d.prod_amount / d.prod_interval * rec.workers * rec.worker_efficiency
+
+
+func _update_production_rate(resource: StringName, delta: float) -> void:
+	if delta > 0.0:
+		Economy.add_production(resource, delta)
+	else:
+		Economy.remove_production(resource, -delta)
 
 
 func is_placing() -> bool:
@@ -351,7 +375,7 @@ func demolish(rec: BuildingRecord) -> void:
 		elif rec.type == &"almacen":
 			Economy.warehouse_count = maxi(0, Economy.warehouse_count - 1)
 		if d.can_produce() and not dev_free_build and rec.workers > 0:
-			Economy.remove_production(d.prod_resource, d.prod_amount / d.prod_interval)
+			Economy.remove_production(d.prod_resource, _worker_production_rate(rec))
 		Economy.changed.emit()
 	# Limpia la seleccion si era este edificio (esto cierra el menu contextual).
 	if _selected == rec:
@@ -492,7 +516,7 @@ func _on_production_timer(rec: BuildingRecord) -> void:
 	if rec.workers <= 0:
 		return
 	var d := get_def(rec.type)
-	var amt: float = rec.amount if rec.amount > 0.0 else d.prod_amount
+	var amt: float = (rec.amount if rec.amount > 0.0 else d.prod_amount) * rec.workers * rec.worker_efficiency
 	Economy.add(String(d.prod_resource), amt)
 
 
@@ -589,6 +613,10 @@ func _place() -> void:
 	var body := BuildingMeshes.build(_pending, null)
 	body.rotation = Vector3(0.0, deg_to_rad(_yaw), 0.0)
 	node.add_child(body)
+	var obstacle := NavigationObstacle3D.new()
+	obstacle.radius = d.footprint * 0.5
+	obstacle.height = 2.5
+	node.add_child(obstacle)
 	add_child(node)
 	var rec := BuildingRecord.new(_pending, ground, _yaw, node, dev_free_build)
 	_placed.append(rec)
