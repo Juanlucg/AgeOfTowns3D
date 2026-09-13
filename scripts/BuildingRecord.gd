@@ -18,6 +18,7 @@ var timer: float = 0.0          # segundos desde la ultima produccion
 var amount: float = 0.0         # override de BuildingDef.prod_amount (granjas con campo)
 var crop: String = ""           # tipo de cultivo en granjas (trigo/zanahoria/bayas), "" si no aplica
 var dev: bool = false            # modo dev: gratis y sin produccion
+var workers: int = 0             # aldeanos asignados al edificio
 
 
 func _init(p_type: StringName = &"", p_pos: Vector2 = Vector2.ZERO, p_yaw: float = 0.0, p_node: Node3D = null, p_dev: bool = false) -> void:

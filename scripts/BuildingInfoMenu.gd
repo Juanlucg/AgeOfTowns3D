@@ -83,7 +83,7 @@ func show_for(record: BuildingRecord, at: Vector2) -> void:
 		_build_capacity(_content, def.capacity, def.capacity_resource)
 	if def.worker_count > 0:
 		_content.add_child(HSeparator.new())
-		_build_workers(_content, def)
+		_build_workers(_content, def, record.workers)
 	_content.add_child(HSeparator.new())
 	_build_storage_row(_content)
 	_content.add_child(HSeparator.new())
@@ -112,6 +112,11 @@ func _input(event: InputEvent) -> void:
 	if not visible:
 		return
 	if event is InputEventMouseButton and event.pressed \
+			and event.button_index == MOUSE_BUTTON_RIGHT:
+		hide_menu()
+		get_viewport().set_input_as_handled()
+		return
+	if event is InputEventMouseButton and event.pressed \
 			and event.button_index == MOUSE_BUTTON_LEFT:
 		if _demolish_button != null and is_instance_valid(_demolish_button):
 			var button_rect := Rect2(_demolish_button.global_position, _demolish_button.size)
@@ -126,9 +131,9 @@ func has_record() -> bool:
 
 
 func _on_catcher_input(event: InputEvent) -> void:
-	if event is InputEventMouseButton and event.pressed \
-			and event.button_index == MOUSE_BUTTON_LEFT:
+	if event is InputEventMouseButton and event.pressed:
 		hide_menu()
+		get_viewport().set_input_as_handled()
 
 
 # --- builders internos ---
@@ -190,7 +195,7 @@ func _build_capacity(parent: VBoxContainer, max: int, resource: StringName) -> v
 	row.add_child(value_label)
 
 
-func _build_workers(parent: VBoxContainer, def: BuildingDef) -> void:
+func _build_workers(parent: VBoxContainer, def: BuildingDef, assigned: int) -> void:
 	var title := Label.new()
 	title.text = "Trabajadores"
 	title.add_theme_font_size_override("font_size", 12)
@@ -215,7 +220,9 @@ func _build_workers(parent: VBoxContainer, def: BuildingDef) -> void:
 		lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		slot.add_child(lbl)
 		var mood := Label.new()
-		mood.text = "OK"
+		mood.text = "Asignado" if i < assigned else "Libre"
+		mood.add_theme_color_override(
+			"font_color", Color(0.45, 1.0, 0.55) if i < assigned else Color(1.0, 0.75, 0.4))
 		mood.add_theme_font_size_override("font_size", 12)
 		slot.add_child(mood)
 

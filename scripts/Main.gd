@@ -36,6 +36,9 @@ func _ready() -> void:
 	buildings.building_focus_changed.connect(_on_building_focus)
 	buildings.building_demolished.connect(minimap._on_building_demolished)
 	villagers.message_requested.connect(hud.show_message)
+	villagers.workers_changed.connect(buildings.set_worker_count)
+	villagers.population_changed.connect(hud.update_population)
+	villagers.refresh_population()
 
 
 func _on_building_focus(rec: BuildingRecord, screen_pos: Vector2) -> void:

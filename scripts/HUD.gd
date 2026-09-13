@@ -25,6 +25,7 @@ var _season_label: Label
 var _day_label: Label
 var _phase_label: Label
 var _weather_label: Label
+var _population_label: Label
 var _last_key := ""
 var _res_labels := {}
 var _storage_bar: ProgressBar
@@ -67,6 +68,8 @@ func _ready() -> void:
 	vbox.add_child(_phase_label)
 	_weather_label = _label(14)
 	vbox.add_child(_weather_label)
+	_population_label = _label(14)
+	vbox.add_child(_population_label)
 
 	vbox.add_child(HSeparator.new())
 
@@ -94,7 +97,7 @@ func _ready() -> void:
 	store_row.add_child(_storage_bar)
 
 	var hint := _label(12)
-	hint.text = "1-4: elegir edificio (menu inferior)"
+	hint.text = "1-6: elegir edificio (menu inferior)"
 	hint.add_theme_color_override("font_color", Color(1, 1, 1, 0.7))
 	vbox.add_child(hint)
 
@@ -118,6 +121,11 @@ func show_message(text: String) -> void:
 	_msg_label.text = text
 	_msg_label.visible = true
 	_msg_timer.start()
+
+
+func update_population(population: int, housing: int, workers: int) -> void:
+	if _population_label != null:
+		_population_label.text = "Población  %d/%d   Trabajando  %d" % [population, housing, workers]
 
 
 func _panel_style() -> StyleBoxFlat:

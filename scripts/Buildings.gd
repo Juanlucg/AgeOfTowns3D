@@ -136,6 +136,24 @@ func get_ids() -> Array[StringName]:
 	return _ids
 
 
+func set_worker_count(pos: Vector2, count: int) -> void:
+	for rec in _placed:
+		if not rec.pos.is_equal_approx(pos):
+			continue
+		var was_active := rec.workers > 0
+		rec.workers = maxi(0, count)
+		var is_active := rec.workers > 0
+		var d := get_def(rec.type)
+		if d != null and d.can_produce() and not rec.dev and was_active != is_active:
+			var rate := d.prod_amount / d.prod_interval
+			if is_active:
+				Economy.add_production(d.prod_resource, rate)
+			else:
+				Economy.remove_production(d.prod_resource, rate)
+			Economy.changed.emit()
+		return
+
+
 func is_placing() -> bool:
 	return _pending != &"" or _field_mode
 
@@ -273,7 +291,7 @@ func _face_camera_now() -> void:
 	# Yaw por defecto al colocar: hacia la camara.
 	if cam_pos.length_squared() > 0.0001:
 		var dir := Vector3(cam_pos.x, 0, cam_pos.z).normalized()
-		_yaw = rad_to_deg(atan2(dir.x, dir.z)) + 180.0
+		_yaw = rad_to_deg(atan2(dir.x, dir.z)) + _facade_offset(_pending)
 
 
 func _camera_world_position() -> Vector3:
@@ -281,6 +299,14 @@ func _camera_world_position() -> Vector3:
 	if camera != null:
 		return camera.global_position
 	return _cam_rig.global_position
+
+
+func _facade_offset(type: StringName) -> float:
+	# Estos edificios procedurales tienen la puerta en +Z; la casa importada
+	# tiene su puerta en -Z.
+	if type == &"granero" or type == &"granja" or type == &"aserradero":
+		return 0.0
+	return 180.0
 
 
 func _face_ghost_to_camera(cam_pos: Vector3) -> void:
@@ -324,7 +350,7 @@ func demolish(rec: BuildingRecord) -> void:
 			Economy.granary_count = maxi(0, Economy.granary_count - 1)
 		elif rec.type == &"almacen":
 			Economy.warehouse_count = maxi(0, Economy.warehouse_count - 1)
-		if d.can_produce() and not dev_free_build:
+		if d.can_produce() and not dev_free_build and rec.workers > 0:
 			Economy.remove_production(d.prod_resource, d.prod_amount / d.prod_interval)
 		Economy.changed.emit()
 	# Limpia la seleccion si era este edificio (esto cierra el menu contextual).
@@ -428,7 +454,7 @@ func _process(delta: float) -> void:
 			# +180: la cara del edificio (puerta) en los meshes esta en -Z
 			# local (no +Z como pensabamos). Empíricamente la puerta queda
 			# detras si solo calculamos atan2; este offset lo corrige.
-			_yaw = rad_to_deg(atan2(dir.x, dir.z)) + 180.0
+			_yaw = rad_to_deg(atan2(dir.x, dir.z)) + _facade_offset(_pending)
 	var d := get_def(_pending)
 	var base_h := _base_height(ground, d.footprint)
 	_ghost.position = Vector3(ground.x, base_h, ground.y)
@@ -462,6 +488,8 @@ func _attach_production_timer(rec: BuildingRecord) -> void:
 
 func _on_production_timer(rec: BuildingRecord) -> void:
 	if rec == null or rec.node == null or not is_instance_valid(rec.node):
+		return
+	if rec.workers <= 0:
 		return
 	var d := get_def(rec.type)
 	var amt: float = rec.amount if rec.amount > 0.0 else d.prod_amount
@@ -554,10 +582,6 @@ func _place() -> void:
 	elif _pending == &"almacen":
 		Economy.warehouse_count += 1
 		Economy.changed.emit()
-	# Registra la produccion del edificio para que el HUD muestre "+X.X/s".
-	# En modo dev (gratis y sin produccion) no se registra.
-	if d.can_produce() and not dev_free_build:
-		Economy.add_production(d.prod_resource, d.prod_amount / d.prod_interval)
 	var base_h := _base_height(ground, d.footprint)
 	# Raiz sin rotar apoyada en el punto de apoyo; el cuerpo gira con el yaw.
 	var node := Node3D.new()

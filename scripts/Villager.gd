@@ -7,15 +7,24 @@ const ARRIVAL_DISTANCE := 0.18
 const VISUAL_SCALE := Vector3(0.35, 0.35, 0.35)
 
 var home_position := Vector2.ZERO
+var home_door_position := Vector2.ZERO
+var home_exit_direction := Vector2(0.0, -1.0)
 var work_position := Vector2.ZERO
 var work_name := ""
+var hunger := 0.0
+var health := 100.0
+var happiness := 100.0
+var _at_work := false
 var _target := Vector2.ZERO
 var _wait_time := 0.0
 var _visual: Node3D
 
 
-func initialize(home: Vector2, spawn_offset: Vector2) -> void:
+func initialize(home: Vector2, spawn_offset: Vector2, door_offset := Vector2.ZERO) -> void:
 	home_position = home
+	home_door_position = home + door_offset
+	if door_offset.length_squared() > 0.001:
+		home_exit_direction = door_offset.normalized()
 	_target = home + spawn_offset
 	position = Vector3(_target.x, Terrain.height_at(_target), _target.y)
 	_wait_time = randf_range(0.2, 1.5)
@@ -30,7 +39,26 @@ func assign_work(work: Vector2, display_name: String) -> void:
 func clear_work() -> void:
 	work_position = Vector2.ZERO
 	work_name = ""
+	_at_work = false
 	_choose_target()
+
+
+func set_work_schedule(at_work: bool) -> void:
+	_at_work = at_work and is_working()
+	if _at_work:
+		_choose_target()
+	else:
+		_target = home_door_position
+
+
+func daily_needs(was_fed: bool) -> void:
+	if was_fed:
+		hunger = maxf(0.0, hunger - 1.0)
+		happiness = minf(100.0, happiness + 1.0)
+	else:
+		hunger = minf(100.0, hunger + 25.0)
+		health = maxf(0.0, health - 5.0)
+		happiness = maxf(0.0, happiness - 12.0)
 
 
 func is_working() -> bool:
@@ -60,10 +88,13 @@ func _process(delta: float) -> void:
 
 
 func _choose_target() -> void:
-	var angle := randf_range(0.0, TAU)
-	var center := work_position if is_working() else home_position
-	var radius := randf_range(0.5, 1.0) if is_working() else randf_range(0.8, WANDER_RADIUS)
-	_target = center + Vector2(cos(angle), sin(angle)) * radius
+	if _at_work:
+		var angle := randf_range(0.0, TAU)
+		_target = work_position + Vector2(cos(angle), sin(angle)) * randf_range(0.5, 1.0)
+		return
+	var side := Vector2(-home_exit_direction.y, home_exit_direction.x)
+	_target = home_door_position + home_exit_direction * randf_range(0.8, WANDER_RADIUS) \
+		+ side * randf_range(-1.0, 1.0)
 
 
 func _build_visual() -> void:

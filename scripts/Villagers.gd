@@ -11,12 +11,14 @@ const FOOD_PER_VILLAGER_PER_DAY := 1.0
 
 signal population_changed(population: int, housing: int, workers: int)
 signal message_requested(text: String)
+signal workers_changed(position: Vector2, count: int)
 
 var _buildings: Buildings
 var _day_night: DayNightCycle
 var _villagers: Array = []
 var _house_groups: Dictionary = {}
 var _work_groups: Dictionary = {}
+var _daytime := true
 
 
 func _ready() -> void:
@@ -29,6 +31,7 @@ func _ready() -> void:
 	_day_night = get_node_or_null(day_night_path) as DayNightCycle
 	if _day_night != null:
 		_day_night.day_changed.connect(_on_day_changed)
+		_day_night.time_changed.connect(_on_time_changed)
 
 
 func _on_building_built(type: StringName, pos: Vector2) -> void:
@@ -63,10 +66,12 @@ func _on_building_demolished(type: StringName, pos: Vector2) -> void:
 
 func _spawn_household(home: Vector2) -> void:
 	var household: Array = []
+	var door_offset := _house_door_offset(home)
 	for index in VILLAGERS_PER_HOUSE:
 		var villager := VILLAGER_SCRIPT.new()
-		var offset := Vector2(-0.35 if index == 0 else 0.35, 0.0)
-		villager.initialize(home, offset)
+		var side := _house_side_offset(home, -0.18 if index == 0 else 0.18)
+		var offset := door_offset + side
+		villager.initialize(home, offset, door_offset)
 		add_child(villager)
 		household.append(villager)
 		_villagers.append(villager)
@@ -80,9 +85,22 @@ func _on_day_changed(_day: int) -> void:
 	_reassign_workers()
 
 
+func _on_time_changed(_day: int, _season: int, hour: float, _weather: String) -> void:
+	var daytime := hour >= 7.0 and hour < 19.0
+	if daytime == _daytime:
+		return
+	_daytime = daytime
+	for villager in _villagers:
+		if is_instance_valid(villager):
+			villager.set_work_schedule(_daytime)
+
+
 func _consume_daily_food() -> bool:
 	var required := _villagers.size() * FOOD_PER_VILLAGER_PER_DAY
 	var fed := Economy.consume_food(required)
+	for villager in _villagers:
+		if is_instance_valid(villager):
+			villager.daily_needs(fed)
 	if not fed and required > 0.0:
 		message_requested.emit("Falta comida: los aldeanos pasan hambre")
 	return fed
@@ -98,11 +116,29 @@ func _try_new_arrival() -> void:
 	if available_house == Vector2.INF:
 		return
 	var villager := VILLAGER_SCRIPT.new()
-	villager.initialize(available_house, Vector2.ZERO)
+	var door_offset := _house_door_offset(available_house)
+	villager.initialize(available_house, door_offset, door_offset)
 	add_child(villager)
 	(_house_groups[available_house] as Array).append(villager)
 	_villagers.append(villager)
 	message_requested.emit("Ha llegado un nuevo aldeano")
+
+
+func _house_door_offset(home: Vector2) -> Vector2:
+	var record := _buildings.building_at(home)
+	if record == null:
+		return Vector2(0.0, -0.7)
+	var yaw := deg_to_rad(record.yaw)
+	# La puerta de la casa importada mira hacia su -Z local.
+	return Vector2(-sin(yaw), -cos(yaw)) * 0.7
+
+
+func _house_side_offset(home: Vector2, amount: float) -> Vector2:
+	var record := _buildings.building_at(home)
+	if record == null:
+		return Vector2(amount, 0.0)
+	var yaw := deg_to_rad(record.yaw)
+	return Vector2(cos(yaw), -sin(yaw)) * amount
 
 
 func _reassign_workers() -> void:
@@ -116,7 +152,9 @@ func _reassign_workers() -> void:
 			if villager == null:
 				break
 			villager.assign_work(group["position"], group["name"])
+			villager.set_work_schedule(_daytime)
 			(group["workers"] as Array).append(villager)
+		workers_changed.emit(group["position"], (group["workers"] as Array).size())
 	_emit_population()
 
 
@@ -137,3 +175,7 @@ func _emit_population() -> void:
 	for group in _work_groups.values():
 		workers += (group["workers"] as Array).size()
 	population_changed.emit(_villagers.size(), housing, workers)
+
+
+func refresh_population() -> void:
+	_emit_population()
