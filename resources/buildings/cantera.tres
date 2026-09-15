@@ -12,11 +12,11 @@ cost = {
 "piedra": 10.0
 }
 prod_resource = &"piedra"
-prod_amount = 2.0
-prod_interval = 5.0
+prod_amount = 1.0
+prod_interval = 6.0
 footprint = 1.1
 biomes = Array[int]([2])
-hint = "+2 piedra / 5s"
+hint = "+1 piedra / 6s"
 color = Color(0.55, 0.55, 0.58, 1)
 capacity = 0
 capacity_resource = &""

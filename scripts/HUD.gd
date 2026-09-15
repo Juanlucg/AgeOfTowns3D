@@ -18,6 +18,7 @@ const SEASON_COLORS := [
 	Color(0.62, 0.78, 0.92),  # invierno: azul claro
 ]
 const MSG_TIME_MS := 2800
+const GAME_SPEEDS := [1.0, 2.0, 4.0]
 
 var _day: DayNightCycle
 var _season_color: ColorRect
@@ -26,15 +27,23 @@ var _day_label: Label
 var _phase_label: Label
 var _weather_label: Label
 var _population_label: Label
+var _homeless_label: Label
 var _last_key := ""
 var _res_labels := {}
 var _storage_bar: ProgressBar
 var _storage_label: Label
 var _msg_label: Label
 var _msg_timer: Timer
+var _pause_button: Button
+var _speed_button: Button
+var _speed_index := 0
 
 
 func _ready() -> void:
+	# El HUD y sus controles deben seguir respondiendo mientras el arbol esta
+	# pausado. La velocidad se aplica al motor para afectar timers y movimiento.
+	process_mode = Node.PROCESS_MODE_ALWAYS
+	Engine.time_scale = 1.0
 	_day = get_node_or_null(day_night_path) as DayNightCycle
 	if _day == null:
 		# assert() desaparece en las builds de release: alli esto reventaba
@@ -42,10 +51,11 @@ func _ready() -> void:
 		push_error("HUD: day_night_path no apunta a un DayNightCycle en el .tscn")
 		return
 	_day.time_changed.connect(_on_time_changed)
-	layer = 10
+	layer = 20
 
 	var panel := PanelContainer.new()
 	panel.position = Vector2(16, 16)
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	panel.add_theme_stylebox_override("panel", _panel_style())
 	add_child(panel)
 
@@ -70,6 +80,11 @@ func _ready() -> void:
 	vbox.add_child(_weather_label)
 	_population_label = _label(14)
 	vbox.add_child(_population_label)
+	# Aviso persistente (no temporal): visible solo cuando hay sin hogar.
+	_homeless_label = _label(14)
+	_homeless_label.add_theme_color_override("font_color", Color(1.0, 0.62, 0.35))
+	_homeless_label.visible = false
+	vbox.add_child(_homeless_label)
 
 	vbox.add_child(HSeparator.new())
 
@@ -96,8 +111,28 @@ func _ready() -> void:
 	_storage_bar.show_percentage = false
 	store_row.add_child(_storage_bar)
 
+	var speed_row := HBoxContainer.new()
+	speed_row.add_theme_constant_override("separation", 6)
+	vbox.add_child(speed_row)
+	var speed_title := _label(12)
+	speed_title.text = "Velocidad"
+	speed_row.add_child(speed_title)
+	_pause_button = Button.new()
+	_pause_button.text = "Pausar"
+	_pause_button.toggle_mode = true
+	_pause_button.custom_minimum_size = Vector2(76, 26)
+	_pause_button.mouse_filter = Control.MOUSE_FILTER_STOP
+	_pause_button.toggled.connect(_on_pause_toggled)
+	speed_row.add_child(_pause_button)
+	_speed_button = Button.new()
+	_speed_button.custom_minimum_size = Vector2(52, 26)
+	_speed_button.mouse_filter = Control.MOUSE_FILTER_STOP
+	_speed_button.pressed.connect(_cycle_speed)
+	speed_row.add_child(_speed_button)
+	_update_speed_controls()
+
 	var hint := _label(12)
-	hint.text = "1-6: elegir edificio (menu inferior)"
+	hint.text = "1-7: edificios | Usa los botones para pausar y cambiar la velocidad"
 	hint.add_theme_color_override("font_color", Color(1, 1, 1, 0.7))
 	vbox.add_child(hint)
 
@@ -126,6 +161,14 @@ func show_message(text: String) -> void:
 func update_population(population: int, housing: int, workers: int) -> void:
 	if _population_label != null:
 		_population_label.text = "Población  %d/%d   Trabajando  %d" % [population, housing, workers]
+
+
+# Aviso persistente de aldeanos sin vivienda. Se oculta solo cuando vuelve a 0.
+func update_homeless(count: int) -> void:
+	if _homeless_label == null:
+		return
+	_homeless_label.text = "Sin hogar: %d aldeanos" % count
+	_homeless_label.visible = count > 0
 
 
 func _panel_style() -> StyleBoxFlat:
@@ -181,6 +224,7 @@ func _update_resources() -> void:
 	_storage_label.tooltip_text = _storage_bar.tooltip_text
 
 
+
 # Formato del ritmo de produccion: "2" si es entero, "0.5" si tiene
 # decimales. "0.03" -> 3 cifras, "1.5" -> 1 cifra.
 func _fmt_rate(r: float) -> String:
@@ -191,6 +235,25 @@ func _fmt_rate(r: float) -> String:
 	if r >= 1.0:
 		return "%.1f" % r
 	return "%.2f" % r
+
+
+func _on_pause_toggled(paused: bool) -> void:
+	get_tree().paused = paused
+	_update_speed_controls()
+
+
+func _cycle_speed() -> void:
+	_speed_index = (_speed_index + 1) % GAME_SPEEDS.size()
+	Engine.time_scale = GAME_SPEEDS[_speed_index]
+	_update_speed_controls()
+
+
+func _update_speed_controls() -> void:
+	if _pause_button != null:
+		_pause_button.button_pressed = get_tree().paused
+		_pause_button.text = "Reanudar" if get_tree().paused else "Pausar"
+	if _speed_button != null:
+		_speed_button.text = "%.0fx" % GAME_SPEEDS[_speed_index]
 
 
 func _phase(h: float) -> String:

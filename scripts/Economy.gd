@@ -37,7 +37,8 @@ const WAREHOUSE_STORAGE := 200.0    # +200 al resto por almacen
 # tradicional sin bonificacion.
 const FOOD_RESOURCE := "comida"
 
-var amounts := {"madera": 60.0, "piedra": 25.0, "comida": 20.0}
+const INITIAL_AMOUNTS := {"madera": 60.0, "piedra": 35.0, "comida": 20.0}
+var amounts := INITIAL_AMOUNTS.duplicate()
 var granary_count := 0
 var warehouse_count := 0
 # Produccion neta por recurso en unidades/segundo. La mantienen los
@@ -45,6 +46,15 @@ var warehouse_count := 0
 var _production_rates: Dictionary = {}
 
 var _day_night: DayNightCycle = null
+
+
+func reset() -> void:
+	amounts = INITIAL_AMOUNTS.duplicate()
+	granary_count = 0
+	warehouse_count = 0
+	_production_rates.clear()
+	_day_night = null
+	changed.emit()
 
 
 func bind_day_night(dn: DayNightCycle) -> void:

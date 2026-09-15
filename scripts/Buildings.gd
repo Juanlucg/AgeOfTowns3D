@@ -30,11 +30,14 @@ signal place_clear_requested(pos: Vector2, radius: float)
 const GHOST_OK := Color(0.30, 1.0, 0.45, 0.45)
 const GHOST_BAD := Color(1.0, 0.30, 0.30, 0.45)
 const SELECT_COLOR := Color(1.0, 0.85, 0.2, 0.55)
+const ZONE_COLOR := Color(0.35, 0.80, 0.45, 0.20)
 const HEIGHT_SAMPLE_STEP := 1.0
 const ROTATE_SPEED := 120.0
 const FIELD_MIN := 1.2
 const FIELD_MAX_AREA := 60.0
-const FIELD_RATE := 0.4
+## Comida por m2 de campo y trabajador e intervalo (bajado para que la granja
+## no produzca tanto; sigue por encima de la cantera).
+const FIELD_RATE := 0.05
 ## Hueco que se deja a la vista entre la casa de la granja y la tierra del
 ## huerto, para que se lean como dos cosas separadas.
 const FIELD_HOUSE_GAP := 0.4
@@ -69,6 +72,9 @@ var _placed: Array[BuildingRecord] = []
 # cell_size >= footprint_max + hit_radius = ~3 + 1.5 + margen.
 const _GRID_CELL := 8.0
 var _grid: Dictionary = {}   # clave: Vector2i(cell_x, cell_y) -> Array[BuildingRecord]
+# Buffer reutilizado por _nearby para no asignar un Array nuevo en cada frame
+# de colocacion. Los llamantes lo consumen al momento y no lo guardan.
+var _nearby_scratch: Array[BuildingRecord] = []
 var _cam_rig: CameraController3D
 
 var _field_mode := false
@@ -77,16 +83,27 @@ var _field_crop := "trigo"
 var _field_ghost: Node3D = null
 var _field_farm: BuildingRecord = null
 var _field_yaw := 0.0
+# El fantasma del campo se reconstruye entero (suelo, valla y plantas) cuando
+# cambia de tamano: se limita a ~12 Hz en vez de rehacerse en cada frame. Si
+# cambia el cultivo, se rehace al momento para que el color responda.
+const FIELD_GHOST_INTERVAL := 0.08
+var _field_ghost_timer := 0.0
+var _field_ghost_last_crop := ""
 # Mientras el usuario mantiene R, la rotacion es manual y NO debe
 # sobreescribirse con el face-camera automatico al soltar.
 var _user_rotated := false
 
 # Edificio actualmente seleccionado (para demolir con Delete). Null = nada.
 var _selected: BuildingRecord = null
-var _selection_marker: MeshInstance3D = null
+var _selection_marker: Node3D = null
 
 # --- Herramientas dev ---
 var dev_free_build := false
+
+# Turno de trabajo (dia). La produccion solo avanza mientras hay turno activo:
+# de noche los aldeanos estan en casa y los edificios no producen. Lo gestiona
+# Villagers al cambiar dia/noche con set_shift_active().
+var _shift_active := true
 
 # Estado del fantasma, para no reconstruirlo cuando nada ha cambiado.
 var _ghost_mat_ok: StandardMaterial3D
@@ -119,6 +136,7 @@ func _register_defs() -> void:
 	_register(preload("res://resources/buildings/aserradero.tres"))
 	_register(preload("res://resources/buildings/cantera.tres"))
 	_register(preload("res://resources/buildings/almacen.tres"))
+	_register(preload("res://resources/buildings/plaza.tres"))
 
 
 func _register(d: BuildingDef) -> void:
@@ -136,39 +154,96 @@ func get_ids() -> Array[StringName]:
 	return _ids
 
 
-func set_worker_count(pos: Vector2, count: int) -> void:
+# --- API de la plaza (reunion / crecimiento / felicidad) ---
+
+## Posicion de la primera plaza (punto de reunion), o Vector2.INF si no hay.
+func get_gathering_point() -> Vector2:
 	for rec in _placed:
-		if not rec.pos.is_equal_approx(pos):
-			continue
-		var old_rate := _worker_production_rate(rec)
-		rec.workers = maxi(0, count)
 		var d := get_def(rec.type)
-		var new_rate := _worker_production_rate(rec)
-		if d != null and d.can_produce() and not rec.dev and not is_equal_approx(old_rate, new_rate):
-			_update_production_rate(d.prod_resource, new_rate - old_rate)
-			Economy.changed.emit()
+		if d != null and d.gathering_point:
+			return rec.pos
+	return Vector2.INF
+
+
+## True si hay algun edificio que atraiga crecimiento (plaza).
+func has_plaza() -> bool:
+	for rec in _placed:
+		var d := get_def(rec.type)
+		if d != null and d.attracts_growth:
+			return true
+	return false
+
+
+## Suma de felicidad diaria que aportan los edificios (plazas).
+func total_happiness_bonus() -> float:
+	var bonus := 0.0
+	for rec in _placed:
+		var d := get_def(rec.type)
+		if d != null:
+			bonus += d.happiness_bonus
+	return bonus
+
+
+func set_worker_count(pos: Vector2, count: int) -> void:
+	var rec := _record_at(pos)
+	if rec == null:
 		return
+	var old_rate := _registered_rate(rec)
+	rec.workers = maxi(0, count)
+	var d := get_def(rec.type)
+	var new_rate := _registered_rate(rec)
+	if d != null and d.can_produce() and not rec.dev and not is_equal_approx(old_rate, new_rate):
+		_update_production_rate(d.prod_resource, new_rate - old_rate)
+		Economy.changed.emit()
 
 
 func set_worker_efficiency(pos: Vector2, efficiency: float) -> void:
-	for rec in _placed:
-		if not rec.pos.is_equal_approx(pos):
-			continue
-		var old_rate := _worker_production_rate(rec)
-		rec.worker_efficiency = clampf(efficiency, 0.0, 1.0)
-		var d := get_def(rec.type)
-		var new_rate := _worker_production_rate(rec)
-		if d != null and d.can_produce() and not rec.dev and not is_equal_approx(old_rate, new_rate):
-			_update_production_rate(d.prod_resource, new_rate - old_rate)
-			Economy.changed.emit()
+	var rec := _record_at(pos)
+	if rec == null:
 		return
+	var old_rate := _registered_rate(rec)
+	rec.worker_efficiency = clampf(efficiency, 0.0, 1.0)
+	var d := get_def(rec.type)
+	var new_rate := _registered_rate(rec)
+	if d != null and d.can_produce() and not rec.dev and not is_equal_approx(old_rate, new_rate):
+		_update_production_rate(d.prod_resource, new_rate - old_rate)
+		Economy.changed.emit()
 
 
 func _worker_production_rate(rec: BuildingRecord) -> float:
 	var d := get_def(rec.type)
 	if rec.dev or d == null or not d.can_produce():
 		return 0.0
-	return d.prod_amount / d.prod_interval * rec.workers * rec.worker_efficiency
+	# Las granjas sobreescriben prod_amount segun el tamano del campo
+	# (rec.amount) y el timer real usa ese override: el HUD debe calcular la
+	# tasa con el mismo valor o mostraria algo distinto a lo que se produce.
+	var amount: float = rec.amount if rec.amount > 0.0 else d.prod_amount
+	return amount / d.prod_interval * rec.workers * rec.worker_efficiency
+
+
+# Tasa que el edificio aporta AHORA al "+X/s" del HUD: 0 cuando no hay turno
+# (de noche los aldeanos no trabajan, asi que el edificio no produce).
+func _registered_rate(rec: BuildingRecord) -> float:
+	return _worker_production_rate(rec) if _shift_active else 0.0
+
+
+## Activa/desactiva el turno de trabajo. Al empezar el dia registra en Economy
+## la produccion de cada edificio; de noche la retira. Lo llama Villagers desde
+## _on_time_changed().
+func set_shift_active(active: bool) -> void:
+	if active == _shift_active:
+		return
+	_shift_active = active
+	for rec in _placed:
+		var d := get_def(rec.type)
+		if d == null or not d.can_produce() or rec.dev or rec.workers <= 0:
+			continue
+		var nominal := _worker_production_rate(rec)
+		if active:
+			_update_production_rate(d.prod_resource, nominal)
+		else:
+			_update_production_rate(d.prod_resource, -nominal)
+	Economy.changed.emit()
 
 
 func _update_production_rate(resource: StringName, delta: float) -> void:
@@ -211,7 +286,7 @@ func building_at(ground: Vector2) -> BuildingRecord:
 # el cursor. Sin esto, building_at y _is_valid son O(N) sobre _placed.
 func _nearby(ground: Vector2) -> Array[BuildingRecord]:
 	var cell := Vector2i(int(floor(ground.x / _GRID_CELL)), int(floor(ground.y / _GRID_CELL)))
-	var out: Array[BuildingRecord] = []
+	_nearby_scratch.clear()
 	# Mira la celda del punto y las 8 adyacentes (un edificio cerca puede
 	# ocupar hasta 2-3 celdas segun su tamano).
 	for dx in [-1, 0, 1]:
@@ -219,8 +294,28 @@ func _nearby(ground: Vector2) -> Array[BuildingRecord]:
 			var key := Vector2i(cell.x + dx, cell.y + dy)
 			var bucket: Array = _grid.get(key, [])
 			for b in bucket:
-				out.append(b)
-	return out
+				_nearby_scratch.append(b)
+	return _nearby_scratch
+
+
+# Devuelve el registro colocado exactamente en `pos`. Primero mira el spatial
+# hash y, si no aparece (p.ej. una granja aun sin campo, que no se indexa hasta
+# confirmarlo), cae al recorrido lineal de _placed. Evita el O(N) en el caso
+# comun de los cambios de trabajadores.
+func _record_at(pos: Vector2) -> BuildingRecord:
+	var cell := Vector2i(int(floor(pos.x / _GRID_CELL)), int(floor(pos.y / _GRID_CELL)))
+	for dx in [-1, 0, 1]:
+		for dy in [-1, 0, 1]:
+			var key := Vector2i(cell.x + dx, cell.y + dy)
+			var bucket: Array = _grid.get(key, [])
+			for b in bucket:
+				var rec := b as BuildingRecord
+				if rec.pos.is_equal_approx(pos):
+					return rec
+	for rec in _placed:
+		if rec.pos.is_equal_approx(pos):
+			return rec
+	return null
 
 
 # Anade un edificio a las celdas que ocupa. Llamar al colocar.
@@ -328,7 +423,7 @@ func _camera_world_position() -> Vector3:
 func _facade_offset(type: StringName) -> float:
 	# Estos edificios procedurales tienen la puerta en +Z; la casa importada
 	# tiene su puerta en -Z.
-	if type == &"granero" or type == &"granja" or type == &"aserradero":
+	if type == &"granero" or type == &"granja" or type == &"aserradero" or type == &"almacen":
 		return 0.0
 	return 180.0
 
@@ -366,16 +461,24 @@ func demolish(rec: BuildingRecord) -> void:
 	# Reembolso antes de cualquier cleanup para que el HUD lo vea.
 	var d := get_def(rec.type)
 	if d != null:
+		# Reembolso parcial via Economy.refund(): respeta la capacidad por
+		# recurso. Antes se sumaba directo a Economy.amounts y se podia pasar
+		# del tope del almacen.
+		var refund := {}
 		for k in d.cost:
-			Economy.amounts[k] = Economy.amounts[k] + d.cost[k] * DEMOLISH_REFUND
+			refund[k] = d.cost[k] * DEMOLISH_REFUND
+		Economy.refund(refund)
 		# Contadores de capacidad: cada granero/almacen demolido reduce su cap.
 		# Produccion: el edificio deja de aportar al "+X.X/s" del HUD.
 		if rec.type == &"granero":
 			Economy.granary_count = maxi(0, Economy.granary_count - 1)
 		elif rec.type == &"almacen":
 			Economy.warehouse_count = maxi(0, Economy.warehouse_count - 1)
-		if d.can_produce() and not dev_free_build and rec.workers > 0:
-			Economy.remove_production(d.prod_resource, _worker_production_rate(rec))
+		# La produccion se registro segun rec.dev (no segun dev_free_build, que
+		# puede haber cambiado despues): si no se usa el mismo criterio, al
+		# demoler se deja produccion fantasma o se resta la que nunca se sumo.
+		if d.can_produce() and not rec.dev and rec.workers > 0:
+			Economy.remove_production(d.prod_resource, _registered_rate(rec))
 		Economy.changed.emit()
 	# Limpia la seleccion si era este edificio (esto cierra el menu contextual).
 	if _selected == rec:
@@ -401,7 +504,10 @@ func _update_selection_marker() -> void:
 		_selection_marker = null
 	if _selected == null or _selected.node == null:
 		return
-	# Anillo amarillo translucido a la altura del suelo del edificio
+	# Raiz en el suelo del edificio: anillo de seleccion y, si tiene, la zona
+	# de actuacion.
+	var root := Node3D.new()
+	root.position = Vector3(_selected.pos.x, Terrain.height_at(_selected.pos) + 0.05, _selected.pos.y)
 	var ring := TorusMesh.new()
 	ring.inner_radius = 0.9
 	ring.outer_radius = 1.1
@@ -414,9 +520,14 @@ func _update_selection_marker() -> void:
 	m.cull_mode = BaseMaterial3D.CULL_DISABLED
 	mi.material_override = m
 	mi.rotation = Vector3(deg_to_rad(90.0), 0.0, 0.0)
-	mi.position = Vector3(_selected.pos.x, Terrain.height_at(_selected.pos) + 0.05, _selected.pos.y)
-	add_child(mi)
-	_selection_marker = mi
+	root.add_child(mi)
+	var d := get_def(_selected.type)
+	if d != null and d.work_radius > 0.0:
+		var zone := BuildingMeshes.zone_disc(d.work_radius, ZONE_COLOR)
+		zone.position = Vector3(0.0, 0.01, 0.0)
+		root.add_child(zone)
+	add_child(root)
+	_selection_marker = root
 
 
 func select(id_str: String) -> void:
@@ -442,6 +553,12 @@ func select(id_str: String) -> void:
 	# Solo gira el cuerpo, no la raiz.
 	_ghost_building.rotation = Vector3(0.0, deg_to_rad(_yaw), 0.0)
 	_ghost.add_child(_ghost_building)
+	# Zona de actuacion (aserradero): disco que no gira con el edificio.
+	var gd := get_def(id)
+	if gd != null and gd.work_radius > 0.0:
+		var zone := BuildingMeshes.zone_disc(gd.work_radius, ZONE_COLOR)
+		zone.position = Vector3(0.0, 0.06, 0.0)
+		_ghost.add_child(zone)
 	add_child(_ghost)
 	selection_changed.emit(id)
 
@@ -457,7 +574,7 @@ func cancel_placement() -> void:
 
 func _process(delta: float) -> void:
 	if _field_mode:
-		_update_field_ghost()
+		_update_field_ghost(delta)
 		return
 	if _pending == &"" or _ghost == null:
 		return
@@ -515,12 +632,18 @@ func _on_production_timer(rec: BuildingRecord) -> void:
 		return
 	if rec.workers <= 0:
 		return
+	# Sin turno activo (noche) los aldeanos no estan trabajando: no produce.
+	if not _shift_active:
+		return
 	var d := get_def(rec.type)
 	var amt: float = (rec.amount if rec.amount > 0.0 else d.prod_amount) * rec.workers * rec.worker_efficiency
 	Economy.add(String(d.prod_resource), amt)
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	# Mientras se pintan caminos, Buildings no procesa la colocacion.
+	if Paths.instance != null and Paths.instance.is_placing():
+		return
 	if event.is_action_pressed("select_building_1") and _field_mode:
 		_field_crop = "trigo"
 		get_viewport().set_input_as_handled()
@@ -576,7 +699,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			return
 		if btn.pressed and btn.button_index == MOUSE_BUTTON_RIGHT and _selected != null:
-			demolish_selected()
+			# Clic derecho = deseleccionar (y asi no choca con la orbita de
+			# camara). Demoler es con Delete, como indica el propio menu.
+			deselect()
 			get_viewport().set_input_as_handled()
 
 
@@ -626,7 +751,9 @@ func _place() -> void:
 		_add_to_grid(rec)
 	_attach_production_timer(rec)
 	building_built.emit(_pending, ground)
-	place_clear_requested.emit(ground, d.footprint + 1.0)
+	# Solo se retira vegetacion dentro de la huella visual del modelo, con un
+	# pequeno margen. Antes el radio era footprint + 1 y despejaba demasiado.
+	place_clear_requested.emit(ground, d.footprint * 0.75)
 	message_requested.emit("%s construido" % d.display_name)
 	if _pending == &"granja":
 		# segundo paso: delimitar el campo de cultivo
@@ -635,6 +762,8 @@ func _place() -> void:
 		_field_start = ground + _field_back() * _field_offset(d, _field_back())
 		_field_crop = "trigo"
 		_field_farm = rec
+		_field_ghost_timer = 0.0
+		_field_ghost_last_crop = ""
 		_field_ghost = Node3D.new()
 		add_child(_field_ghost)
 		_ghost.visible = false
@@ -716,13 +845,18 @@ func _confirm_field() -> void:
 	# seleccionar la granja. Ahora el campo puede estar girado, asi que se
 	# calcula desde sus cuatro esquinas y no desde el rectangulo en ejes de
 	# granja: con la granja a 45 grados los dos no coinciden.
+	# El campo visual (suelo, valla y plantas) ocupa outer_size(), que anade el
+	# margen de tierra y redondea a celdas. El AABB guardado debe cubrirlo, no
+	# solo la zona sembrada, o la seleccion y la validacion de colocacion se
+	# quedan cortas por la valla.
+	var outer := FieldMesh.outer_size(rect.size)
 	var back := _field_back()
 	var side := Vector2(back.y, -back.x)
 	var fmin := Vector2(INF, INF)
 	var fmax := Vector2(-INF, -INF)
 	for sx: float in [-1.0, 1.0]:
 		for sz: float in [-1.0, 1.0]:
-			var corner: Vector2 = center + side * (w * 0.5 * sx) + back * (d * 0.5 * sz)
+			var corner: Vector2 = center + side * (outer.x * 0.5 * sx) + back * (outer.y * 0.5 * sz)
 			fmin = Vector2(minf(fmin.x, corner.x), minf(fmin.y, corner.y))
 			fmax = Vector2(maxf(fmax.x, corner.x), maxf(fmax.y, corner.y))
 	_field_farm.field_min = fmin
@@ -732,7 +866,16 @@ func _confirm_field() -> void:
 	_add_to_grid(_field_farm)
 	# Radio que cubre el campo entero incluidas las esquinas.
 	place_clear_requested.emit(center, rect.size.length() * 0.5 + 1.0)
-	_field_farm.amount = clampf(w * d * FIELD_RATE, 1.0, 25.0)
+	# La produccion de la granja depende del tamano del campo (rec.amount), y
+	# el timer real ya la usa. Si se cambio el override, hay que corregir la
+	# tasa registrada en Economy para que el HUD no muestre otra cosa.
+	var def := get_def(&"granja")
+	var rate_before := _registered_rate(_field_farm)
+	_field_farm.amount = clampf(w * d * FIELD_RATE, 0.5, 8.0)
+	var rate_after := _registered_rate(_field_farm)
+	if def != null and def.can_produce() and not _field_farm.dev \
+			and not is_equal_approx(rate_before, rate_after):
+		_update_production_rate(def.prod_resource, rate_after - rate_before)
 	_field_farm.crop = _field_crop
 	Economy.changed.emit()
 	var crop_name: String = CROP_NAMES[_field_crop]
@@ -744,12 +887,24 @@ func _cancel_field() -> void:
 	# Solo se devuelve lo que se llego a cobrar: en modo dev la granja fue
 	# gratis, asi que devolverla regalaba recursos (colocar y cancelar en
 	# bucle era madera infinita).
-	var was_free := _field_farm != null and _field_farm.dev
+	if _field_farm == null:
+		_end_field_mode()
+		cancel_placement()
+		return
+	var was_free := _field_farm.dev
+	var def := get_def(&"granja")
+	# La granja ya emitio building_built al colocarse, asi que pudo registrar
+	# produccion y un grupo de trabajo. Hay que deshacerlo igual que demolish()
+	# y avisar por la senal para que Villagers y Minimap limpien su estado.
+	if def != null and def.can_produce() and not was_free and _field_farm.workers > 0:
+		Economy.remove_production(def.prod_resource, _registered_rate(_field_farm))
 	_placed.erase(_field_farm)
-	if _field_farm != null and _field_farm.node != null:
+	if _field_farm.node != null:
 		_field_farm.node.queue_free()
-	if not was_free:
-		Economy.refund(get_def(&"granja").cost)
+	if not was_free and def != null:
+		Economy.refund(def.cost)
+	building_demolished.emit(_field_farm.type, _field_farm.pos)
+	Economy.changed.emit()
 	message_requested.emit("Granja cancelada (recursos devueltos)")
 	_end_field_mode()
 	cancel_placement()
@@ -765,9 +920,16 @@ func _end_field_mode() -> void:
 	cancel_placement()
 
 
-func _update_field_ghost() -> void:
+func _update_field_ghost(delta: float) -> void:
 	if _field_ghost == null:
 		return
+	# Reconstruir el campo entero (suelo + valla + plantas) es caro: se agrupa
+	# a ~12 Hz. Un cambio de cultivo fuerza el rehacer inmediato (color).
+	_field_ghost_timer -= delta
+	if _field_crop == _field_ghost_last_crop and _field_ghost_timer > 0.0:
+		return
+	_field_ghost_timer = FIELD_GHOST_INTERVAL
+	_field_ghost_last_crop = _field_crop
 	var ground: Vector2 = _cam_rig.screen_to_ground(get_viewport().get_mouse_position())
 	var rect := _field_rect(ground)
 	for c in _field_ghost.get_children():
@@ -836,10 +998,27 @@ func _is_valid(pos: Vector2, type: StringName) -> bool:
 		return false
 	if not dev_free_build and not Economy.can_afford(d.cost):
 		return false
-	var min_dist: float = d.footprint + 1.5
 	# Spatial hash: solo revisa edificios en la celda (o adyacentes) a pos.
 	# 9 celdas * ~1 edificio/celda = ~10 checks en vez de N (cientos).
 	for b in _nearby(pos):
+		var other_def := get_def(b.type)
+		if other_def == null:
+			continue
+		# 1. Separacion entre casitas (aproximacion circular por huella).
+		# Deja 0.25 m entre modelos; dos casas pueden quedar juntas sin
+		# solaparse visualmente.
+		var min_dist := d.footprint * 0.5 + other_def.footprint * 0.5 + 0.25
+		# Si ambos tienen zona de actuacion (aserraderos), sus radios no pueden
+		# solaparse: dos aserraderos no comparten arboles.
+		if d.work_radius > 0.0 and other_def.work_radius > 0.0:
+			min_dist = d.work_radius + other_def.work_radius
 		if (b.pos - pos).length() < min_dist:
 			return false
+		# 2. Campo de una granja: no se puede construir encima. Se expande su
+		# AABB por media huella del edificio nuevo para no rozar la valla.
+		if b.field != null and b.field_min != b.field_max:
+			var pad := d.footprint * 0.5
+			if pos.x >= b.field_min.x - pad and pos.x <= b.field_max.x + pad \
+				and pos.y >= b.field_min.y - pad and pos.y <= b.field_max.y + pad:
+				return false
 	return true

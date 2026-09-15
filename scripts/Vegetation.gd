@@ -68,20 +68,17 @@ func _populate() -> void:
 		var y := 0.0
 		while y < Terrain.WORLD_SIZE:
 			var p := Vector2(x, y)
-			var cls: String = Terrain.terrain_type(p)
 			var tree_prob := 0.0
 			var bush_prob := 0.0
 			var round_only := false
-			match cls:
-				"bosque":
+			match Terrain.class_at(p):
+				Terrain.CLASS_FOREST:
 					tree_prob = FOREST_PROB
 					bush_prob = FOREST_BUSH_PROB
-				"llanura":
+				Terrain.CLASS_PLAINS:
 					tree_prob = PLAINS_PROB
 					bush_prob = PLAINS_BUSH_PROB
 					round_only = true
-				_:
-					tree_prob = 0.0
 			var pos := p + Vector2(rng.randf_range(-JITTER, JITTER), rng.randf_range(-JITTER, JITTER))
 			if _plantable_at(pos):
 				if bush_prob > 0.0 and rng.randf() < bush_prob:
@@ -116,8 +113,8 @@ func _apply_populated() -> void:
 # separacion minima de la costa para que troncos y arbustos no queden en el
 # agua, la arena ni la montaña (el jitter puede sacarlos de su celda original).
 func _plantable_at(pos: Vector2) -> bool:
-	var cls: String = Terrain.terrain_type(pos)
-	if cls != "bosque" and cls != "llanura":
+	var cls: int = Terrain.class_at(pos)
+	if cls != Terrain.CLASS_FOREST and cls != Terrain.CLASS_PLAINS:
 		return false
 	return Terrain.distance_to_water(pos) >= 0.6
 

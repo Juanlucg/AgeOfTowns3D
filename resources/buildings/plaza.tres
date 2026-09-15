@@ -1,0 +1,27 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3 uid="uid://b_plaza_def"]
+
+[ext_resource type="Script" uid="uid://ctucq26cgi5hk" path="res://scripts/BuildingDef.gd" id="1_def"]
+
+[resource]
+script = ExtResource("1_def")
+id = &"plaza"
+display_name = "Plaza"
+description = "Punto de reunion del pueblo. Da felicidad a los aldeanos y atrae nuevos vecinos."
+cost = {
+"madera": 20.0,
+"piedra": 15.0
+}
+prod_resource = &""
+prod_amount = 0.0
+prod_interval = 0.0
+footprint = 2.4
+biomes = Array[int]([0])
+hint = "Reunion, felicidad y crecimiento"
+color = Color(0.85, 0.72, 0.42, 1)
+capacity = 0
+capacity_resource = &""
+worker_count = 0
+worker_names = PackedStringArray()
+happiness_bonus = 2.0
+attracts_growth = true
+gathering_point = true

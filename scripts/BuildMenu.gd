@@ -4,16 +4,18 @@ class_name BuildMenu
 ## (nombre, hint, coste) + tooltip al hover con detalle.
 
 @export var buildings_path: NodePath
+@export var paths_path: NodePath
 
 # Carga explicita (no depende de la resolucion de class_name por el indice).
 const UIStyle := preload("res://scripts/UIStyle.gd")
 const BuildingTooltip := preload("res://scripts/BuildingTooltip.gd")
 
-const TYPE_KEYS: Array[StringName] = [&"granero", &"granja", &"casa", &"aserradero", &"cantera", &"almacen"]
+const TYPE_KEYS: Array[StringName] = [&"granero", &"granja", &"casa", &"aserradero", &"cantera", &"almacen", &"plaza"]
 
 var _buttons := {}
 var _group := ButtonGroup.new()
 var _buildings: Buildings
+var _paths: Paths
 var _hint: Label
 var _syncing := false
 var _tooltip: BuildingTooltip
@@ -24,6 +26,7 @@ func _ready() -> void:
 	if _buildings == null:
 		push_error("BuildMenu: buildings_path no apunta a un Buildings en el .tscn")
 		return
+	_paths = get_node_or_null(paths_path) as Paths
 	layer = 10
 	_buildings.selection_changed.connect(_on_selection_changed)
 
@@ -64,8 +67,19 @@ func _ready() -> void:
 		row.add_child(b)
 		_buttons[id] = b
 
+	# Boton de caminos (no es un edificio).
+	var path_row := HBoxContainer.new()
+	path_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	vbox.add_child(path_row)
+	var path_btn := Button.new()
+	path_btn.text = "Camino (P)"
+	path_btn.custom_minimum_size = Vector2(0, 30)
+	path_btn.add_theme_font_size_override("font_size", 12)
+	path_btn.pressed.connect(_on_path_pressed)
+	path_row.add_child(path_btn)
+
 	_hint = Label.new()
-	_hint.text = "1-6: elegir edificio   |   clic: colocar   |   mantener R: rotar   |   Esc o clic der.: cancelar   |   Delete: demoler seleccionado"
+	_hint.text = "1-7: edificio   |   P: camino   |   clic: colocar   |   R: rotar   |   Esc/der.: cancelar   |   Delete: demoler"
 	_hint.add_theme_font_size_override("font_size", 12)
 	_hint.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
 	_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -86,7 +100,17 @@ func _panel_style() -> StyleBoxFlat:
 func _on_pressed(type: StringName) -> void:
 	if _syncing:
 		return
+	if _paths != null:
+		_paths.stop_build()
 	_buildings.select(String(type))
+
+
+func _on_path_pressed() -> void:
+	if _paths == null:
+		return
+	# Camino y edificios son excluyentes: cancelar la colocacion pendiente.
+	_buildings.cancel_placement()
+	_paths.toggle_build()
 
 
 func _on_selection_changed(type: StringName) -> void:
@@ -133,6 +157,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	for i in TYPE_KEYS.size():
 		if event.is_action_pressed("select_building_%d" % (i + 1)):
+			if _paths != null:
+				_paths.stop_build()
 			_buildings.select(String(TYPE_KEYS[i]))
 			get_viewport().set_input_as_handled()
 			return

@@ -344,85 +344,92 @@ func _generate() -> void:
 		lake_wl = minf(lake_wl, heights[rim_j * _width + rim_i])
 	lake_wl -= 0.2
 	var path := _trace_river(heights, rng, src, mouth)
-	var meander := _meander_polyline(path)
-	var meander_mask := _polyline_mask(meander.points)
-	var half_px := RIVER_HALF_WIDTH_U * _px_per_unit
-	# Campo de distancias del cauce solo dentro de su caja (no en todo el mapa)
-	var pad := int(half_px * 2.5) + 2
-	var rmin := Vector2(1.0e9, 1.0e9)
-	var rmax := Vector2(-1.0e9, -1.0e9)
-	for pt in meander.points:
-		rmin.x = minf(rmin.x, pt.x)
-		rmin.y = minf(rmin.y, pt.y)
-		rmax.x = maxf(rmax.x, pt.x)
-		rmax.y = maxf(rmax.y, pt.y)
-	var rbox := Rect2i(int(rmin.x) - pad, int(rmin.y) - pad, int(rmax.x - rmin.x) + pad * 2 + 1, int(rmax.y - rmin.y) + pad * 2 + 1)
-	var river_dist := TerrainUtils.distance_field_region(meander_mask, _width, _height, rbox)
-	var rtotal: float = meander.cum[meander.cum.size() - 1]
-	# Fraccion del cauce (al final) dedicada a fundir la desembocadura con el mar
-	var mouth_frac := 1.0
-	if rtotal > 0.0:
-		mouth_frac = clampf(RIVER_MOUTH_FADE_U * _px_per_unit / rtotal, 0.0, 1.0)
-	for idx in range(n):
-		var rd: float = river_dist[idx]
-		if rd >= half_px * 2.5:
-			continue
-		var p := Vector2(idx % _width, idx / _width)
-		var s := _along_fraction(p, meander.points, meander.cum, rtotal)
-		# Cerca de la desembocadura el cauce se ensancha, se hace poco profundo
-		# y su nivel de agua baja hasta el nivel del mar: sin escalon submarino
-		# ni "linea" entre el agua del rio y la del mar.
-		var mf := TerrainUtils.smoothstep(clampf((s - (1.0 - mouth_frac)) / mouth_frac, 0.0, 1.0))
-		var hp := half_px * (1.0 + 1.5 * mf)
-		if rd < hp:
-			var bank: float = heights[idx]
-			var bed := bank - RIVER_CARVE * TerrainUtils.smoothstep(1.0 - rd / hp)
-			bed = lerpf(bed, RIVER_MOUTH_BED, mf)
-			heights[idx] = bed
-			# El nivel de agua del cauce declina desde el lago (s=0) hasta el
-			# mar (s=1), y nunca supera la orilla (sin inundar).
-			var wl := minf(lerpf(lake_wl, SEA_LEVEL, s), bank - RIVER_WATER_MARGIN)
-			wl = lerpf(wl, SEA_LEVEL, mf)
-			_wl_px[idx] = wl
+	# Sin cauce (p.ej. si el nacimiento cae en el mar) se salta TODO el procesado
+	# del rio: excavado, campo de distancias y lago de nacimiento. Antes solo se
+	# evitaba el acceso a cum[0] y el codigo seguia con una polilinea y una caja
+	# vacias (funcionaba por el clamp de distance_field_region, pero era fragil).
+	if path.is_empty():
+		print_verbose("[Terrain] rio: sin trazado (nacimiento en el mar)")
+	else:
+		var meander := _meander_polyline(path)
+		var meander_mask := _polyline_mask(meander.points)
+		var half_px := RIVER_HALF_WIDTH_U * _px_per_unit
+		# Campo de distancias del cauce solo dentro de su caja (no en todo el mapa)
+		var pad := int(half_px * 2.5) + 2
+		var rmin := Vector2(1.0e9, 1.0e9)
+		var rmax := Vector2(-1.0e9, -1.0e9)
+		for pt in meander.points:
+			rmin.x = minf(rmin.x, pt.x)
+			rmin.y = minf(rmin.y, pt.y)
+			rmax.x = maxf(rmax.x, pt.x)
+			rmax.y = maxf(rmax.y, pt.y)
+		var rbox := Rect2i(int(rmin.x) - pad, int(rmin.y) - pad, int(rmax.x - rmin.x) + pad * 2 + 1, int(rmax.y - rmin.y) + pad * 2 + 1)
+		var river_dist := TerrainUtils.distance_field_region(meander_mask, _width, _height, rbox)
+		var rtotal: float = meander.cum[meander.cum.size() - 1] if not meander.cum.is_empty() else 0.0
+		# Fraccion del cauce (al final) dedicada a fundir la desembocadura con el mar
+		var mouth_frac := 1.0
+		if rtotal > 0.0:
+			mouth_frac = clampf(RIVER_MOUTH_FADE_U * _px_per_unit / rtotal, 0.0, 1.0)
+		for idx in range(n):
+			var rd: float = river_dist[idx]
+			if rd >= half_px * 2.5:
+				continue
+			var p := Vector2(idx % _width, idx / _width)
+			var s := _along_fraction(p, meander.points, meander.cum, rtotal)
+			# Cerca de la desembocadura el cauce se ensancha, se hace poco profundo
+			# y su nivel de agua baja hasta el nivel del mar: sin escalon submarino
+			# ni "linea" entre el agua del rio y la del mar.
+			var mf := TerrainUtils.smoothstep(clampf((s - (1.0 - mouth_frac)) / mouth_frac, 0.0, 1.0))
+			var hp := half_px * (1.0 + 1.5 * mf)
+			if rd < hp:
+				var bank: float = heights[idx]
+				var bed := bank - RIVER_CARVE * TerrainUtils.smoothstep(1.0 - rd / hp)
+				bed = lerpf(bed, RIVER_MOUTH_BED, mf)
+				heights[idx] = bed
+				# El nivel de agua del cauce declina desde el lago (s=0) hasta el
+				# mar (s=1), y nunca supera la orilla (sin inundar).
+				var wl := minf(lerpf(lake_wl, SEA_LEVEL, s), bank - RIVER_WATER_MARGIN)
+				wl = lerpf(wl, SEA_LEVEL, mf)
+				_wl_px[idx] = wl
 
-	# --- Lago de nacimiento: pequeno lago hundido al pie de la montaña, del
-	# que nace el rio ---
-	var sl_shape := FastNoiseLite.new()
-	sl_shape.seed = SEED + 11
-	sl_shape.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
-	sl_shape.frequency = 0.20
-	var sl_radius := RIVER_SOURCE_LAKE_RADIUS_U
-	var sl_bottom := lake_wl - RIVER_SOURCE_LAKE_DEPTH
-	var sl_box := int(sl_radius * 1.5 * _px_per_unit) + 2
-	for j in range(maxi(0, int(sl_center.y) - sl_box), mini(_height - 1, int(sl_center.y) + sl_box) + 1):
-		for i in range(maxi(0, int(sl_center.x) - sl_box), mini(_width - 1, int(sl_center.x) + sl_box) + 1):
-			var d_u: float = Vector2(i, j).distance_to(sl_center) / _px_per_unit
-			var nv := sl_shape.get_noise_2d(float(i) / _px_per_unit, float(j) / _px_per_unit)
-			var rr := sl_radius * (1.0 + 0.25 * nv)
-			if d_u > rr:
-				continue
-			var idx := j * _width + i
-			var orig: float = heights[idx]
-			# El lago ya esta en zona llana: solo se evita excavar una ladera
-			# realmente escarpada si el terreno llega muy alto dentro del circulo
-			# (corte duro, sin fundidos, para no crear picos residuales).
-			if orig - lake_wl > 2.0:
-				continue
-			var target: float
-			if d_u <= rr * 0.4:
-				# Fondo plano del lago (por debajo de su nivel de agua)
-				target = sl_bottom
-			else:
-				var u := (d_u - rr * 0.4) / (rr - rr * 0.4)
-				var t := TerrainUtils.smoothstep(clampf(u, 0.0, 1.0))
-				target = lerpf(sl_bottom, orig, t)
-			# El lago nunca rellena el cauce del rio ya excavado: se mantiene lo
-			# mas profundo de los dos, asi el agua del lago conecta con el rio.
-			heights[idx] = minf(target, orig)
-			if heights[idx] < lake_wl:
-				_wl_px[idx] = lake_wl
-				_lake_px[idx] = 1
-	print_verbose("[Terrain] rio: fuente=%s boca=%s (lado opuesto)" % [src, mouth])
+		# --- Lago de nacimiento: pequeno lago hundido al pie de la montaña, del
+		# que nace el rio ---
+		var sl_shape := FastNoiseLite.new()
+		sl_shape.seed = SEED + 11
+		sl_shape.noise_type = FastNoiseLite.TYPE_SIMPLEX_SMOOTH
+		sl_shape.frequency = 0.20
+		var sl_radius := RIVER_SOURCE_LAKE_RADIUS_U
+		var sl_bottom := lake_wl - RIVER_SOURCE_LAKE_DEPTH
+		var sl_box := int(sl_radius * 1.5 * _px_per_unit) + 2
+		for j in range(maxi(0, int(sl_center.y) - sl_box), mini(_height - 1, int(sl_center.y) + sl_box) + 1):
+			for i in range(maxi(0, int(sl_center.x) - sl_box), mini(_width - 1, int(sl_center.x) + sl_box) + 1):
+				var d_u: float = Vector2(i, j).distance_to(sl_center) / _px_per_unit
+				var nv := sl_shape.get_noise_2d(float(i) / _px_per_unit, float(j) / _px_per_unit)
+				var rr := sl_radius * (1.0 + 0.25 * nv)
+				if d_u > rr:
+					continue
+				var idx := j * _width + i
+				var orig: float = heights[idx]
+				# El lago ya esta en zona llana: solo se evita excavar una ladera
+				# realmente escarpada si el terreno llega muy alto dentro del circulo
+				# (corte duro, sin fundidos, para no crear picos residuales).
+				if orig - lake_wl > 2.0:
+					continue
+				var target: float
+				if d_u <= rr * 0.4:
+					# Fondo plano del lago (por debajo de su nivel de agua)
+					target = sl_bottom
+				else:
+					var u := (d_u - rr * 0.4) / (rr - rr * 0.4)
+					var t := TerrainUtils.smoothstep(clampf(u, 0.0, 1.0))
+					target = lerpf(sl_bottom, orig, t)
+				# El lago nunca rellena el cauce del rio ya excavado: se mantiene lo
+				# mas profundo de los dos, asi el agua del lago conecta con el rio.
+				heights[idx] = minf(target, orig)
+				if heights[idx] < lake_wl:
+					_wl_px[idx] = lake_wl
+					_lake_px[idx] = 1
+		print_verbose("[Terrain] rio: fuente=%s boca=%s (lado opuesto)" % [src, mouth])
 
 	# --- Lago de montaña: un solo lago, de tamano medio, con orilla irregular
 	# (ruido) y elevado entre las sierras, en correlacion con sus alturas ---
@@ -747,6 +754,10 @@ func _meander_polyline(path: Array[int]) -> Dictionary:
 	for idx in path:
 		pts.append(Vector2(idx % _width, idx / _width))
 	var cum := PackedFloat32Array()
+	if pts.is_empty():
+		# Sin cauce (p.ej. si el nacimiento cae en el mar): devuelve una
+		# polilinea vacia en vez de indexar cum[0] fuera de rango.
+		return {"points": pts, "cum": cum}
 	cum.resize(pts.size())
 	cum[0] = 0.0
 	for k in range(1, pts.size()):
@@ -934,10 +945,18 @@ func _lake_gap_length(heights: PackedFloat32Array, center: Vector2, radius_u: fl
 # ---------------------------------------------------------------------------
 # API de consulta
 # ---------------------------------------------------------------------------
-func _pixel(p: Vector2) -> Vector2i:
+func _pixel_index(p: Vector2) -> int:
 	var px := int(clampf(p.x / WORLD_SIZE, 0.0, 1.0) * float(_width - 1))
 	var py := int(clampf(p.y / WORLD_SIZE, 0.0, 1.0) * float(_height - 1))
-	return Vector2i(px, py)
+	return py * _width + px
+
+
+## Clase de bioma en `p` como entero CLASS_*. Evita devolver/comparar Strings en
+## bucles de colocacion (vegetacion, rocas) y permite reutilizar el indice.
+func class_at(p: Vector2) -> int:
+	if _width == 0:
+		return CLASS_PLAINS
+	return _class_px[_pixel_index(p)]
 
 
 func height_at(p: Vector2) -> float:
@@ -987,11 +1006,7 @@ func forest_at(p: Vector2) -> float:
 
 
 func terrain_type(p: Vector2) -> String:
-	if _width == 0:
-		return "llanura"
-	var pi := _pixel(p)
-	var c := _class_px[pi.y * _width + pi.x]
-	match c:
+	match class_at(p):
 		CLASS_WATER:
 			return "agua"
 		CLASS_SAND:
@@ -1007,10 +1022,7 @@ func terrain_type(p: Vector2) -> String:
 
 
 func is_water(p: Vector2) -> bool:
-	if _width == 0:
-		return false
-	var pi := _pixel(p)
-	return _class_px[pi.y * _width + pi.x] == CLASS_WATER
+	return class_at(p) == CLASS_WATER
 
 
 func biome_color(c: int, h: float) -> Color:
@@ -1043,7 +1055,10 @@ func make_minimap_texture(tex_size: int) -> ImageTexture:
 			var px := clampi(int(float(i) / tex_size * _width), 0, _width - 1)
 			var py := clampi(int(float(j) / tex_size * _height), 0, _height - 1)
 			hs[j * tex_size + i] = _height_px[py * _width + px]
-	var img := Image.create(tex_size, tex_size, false, Image.FORMAT_RGB8)
+	# Se rellena un buffer RGB8 de golpe y se crea la imagen con el: set_pixel()
+	# pixel a pixel (65k conversiones de Color) era mucho mas lento.
+	var bytes := PackedByteArray()
+	bytes.resize(tex_size * tex_size * 3)
 	var light := Vector3(-0.55, 0.8, -0.35).normalized()
 	for j in range(tex_size):
 		for i in range(tex_size):
@@ -1063,14 +1078,19 @@ func make_minimap_texture(tex_size: int) -> ImageTexture:
 				var nrm := Vector3(-dzx, 1.0, -dzy).normalized()
 				var shade := clampf(0.58 + 0.42 * light.dot(nrm), 0.0, 1.0)
 				col *= shade
-			img.set_pixel(i, j, col)
-	return ImageTexture.create_from_image(img)
+			var o := (j * tex_size + i) * 3
+			bytes[o] = int(clampf(col.r, 0.0, 1.0) * 255.0)
+			bytes[o + 1] = int(clampf(col.g, 0.0, 1.0) * 255.0)
+			bytes[o + 2] = int(clampf(col.b, 0.0, 1.0) * 255.0)
+	return ImageTexture.create_from_image(
+		Image.create_from_data(tex_size, tex_size, false, Image.FORMAT_RGB8, bytes))
 
 
 func distance_to_water(p: Vector2) -> float:
 	if _width == 0:
 		return 0.0
-	if is_water(p):
+	# Un solo calculo del indice: antes is_water() y esto recalculaban el pixel.
+	var idx := _pixel_index(p)
+	if _class_px[idx] == CLASS_WATER:
 		return -0.1
-	var pi := _pixel(p)
-	return _water_dist_px[pi.y * _width + pi.x] / _px_per_unit
+	return _water_dist_px[idx] / _px_per_unit

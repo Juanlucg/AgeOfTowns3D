@@ -18,6 +18,10 @@ class_name CameraController3D
 
 @export var map_corner_min: Vector2 = Vector2(0.0, 0.0)
 @export var map_corner_max: Vector2 = Vector2.ZERO   # si queda en cero, se toma el tamano del mapa
+# Scroll por borde: si el raton llega al borde de la ventana, la camara se
+# desplaza en esa direccion. El margen es en pixeles.
+@export var edge_scroll_enabled := true
+@export var edge_scroll_margin := 16.0
 
 # Emitido cada vez que la camara (posicion/yaw/pitch/zoom) cambia de forma
 # relevante. Consumidores (p.ej. Minimap) lo usan para invalidar caches.
@@ -109,6 +113,9 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _process(delta: float) -> void:
+	# Engine.time_scale acelera la simulacion completa. La camara mantiene una
+	# respuesta constante independientemente de que el juego este a 1x, 2x o 4x.
+	var camera_delta := delta / maxf(Engine.time_scale, 0.001)
 	if _orbiting and not (Input.is_mouse_button_pressed(MOUSE_BUTTON_MIDDLE) or Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT)):
 		_orbiting = false
 
@@ -122,6 +129,13 @@ func _process(delta: float) -> void:
 	if Input.is_action_pressed("move_right"):
 		dir.x += 1
 
+	# Scroll por borde. Solo con la ventana enfocada, para no mover la camara
+	# mientras se usa otra ventana.
+	if edge_scroll_enabled and get_window() != null and get_window().has_focus():
+		dir += _edge_direction(
+			get_viewport().get_mouse_position(),
+			get_viewport().get_visible_rect().size)
+
 	var yaw_input := 0.0
 	if Input.is_action_pressed("rotate_camera_left"):
 		yaw_input -= 1
@@ -130,17 +144,17 @@ func _process(delta: float) -> void:
 
 	if dir != Vector2.ZERO:
 		dir = dir.normalized()
-		var speed: float = MOVE_SPEED * (_zoom_target / ZOOM_START) * delta
+		var speed: float = MOVE_SPEED * (_zoom_target / ZOOM_START) * camera_delta
 		_position_target += _right() * dir.x * speed - _forward() * dir.y * speed
 		_position_target.x = clampf(_position_target.x, map_corner_min.x - BORDER, map_corner_max.x + BORDER)
 		_position_target.z = clampf(_position_target.z, map_corner_min.y - BORDER, map_corner_max.y + BORDER)
 
 	if yaw_input != 0.0:
-		_yaw_target += yaw_input * ROTATE_SPEED * delta
+		_yaw_target += yaw_input * ROTATE_SPEED * camera_delta
 
 	# Lerp hacia los targets. SMOOTH_FACTOR escala con delta para ser
 	# independiente del frame rate.
-	var t: float = 1.0 - exp(-SMOOTH_FACTOR * delta)
+	var t: float = 1.0 - exp(-SMOOTH_FACTOR * camera_delta)
 	var yaw_prev := _yaw
 	var pitch_prev := _pitch
 	var zoom_prev := _zoom
@@ -149,9 +163,12 @@ func _process(delta: float) -> void:
 	_pitch = lerpf(_pitch, _pitch_target, t)
 	_zoom = lerpf(_zoom, _zoom_target, t)
 	position = position.lerp(_position_target, t)
+	# Si nada cambio respecto al frame anterior (ya asentado) se evita el
+	# recalculo de la camara (2 consultas de altura + look_at) y el aviso.
+	if _yaw == yaw_prev and _pitch == pitch_prev and _zoom == zoom_prev and position == pos_prev:
+		return
 	_apply()
-	if _yaw != yaw_prev or _pitch != pitch_prev or _zoom != zoom_prev or position != pos_prev:
-		viewport_changed.emit()
+	viewport_changed.emit()
 
 
 # Convierte una posicion de pantalla en el punto del suelo que se ve, teniendo
@@ -175,6 +192,24 @@ func world_to_screen(world_pos: Vector3) -> Vector2:
 	if _cam == null:
 		return Vector2.ZERO
 	return _cam.unproject_position(world_pos)
+
+
+# Se probo un paso adaptable (mas grueso con la distancia) y se descarto: en
+# rayos rasantes atravesaba crestas y el punto de impacto podia caer decenas de
+# metros mas alla. El paso fijo de 2 m mantiene el clic donde toca.
+# Direccion de desplazamiento segun la posicion del raton en la ventana:
+# +-1 en cada eje si esta dentro del margen de borde, 0 si no.
+func _edge_direction(mouse: Vector2, size: Vector2) -> Vector2:
+	var d := Vector2.ZERO
+	if mouse.x <= edge_scroll_margin:
+		d.x -= 1.0
+	elif mouse.x >= size.x - edge_scroll_margin:
+		d.x += 1.0
+	if mouse.y <= edge_scroll_margin:
+		d.y -= 1.0
+	elif mouse.y >= size.y - edge_scroll_margin:
+		d.y += 1.0
+	return d
 
 
 func _march(origin: Vector3, ray: Vector3) -> Vector3:

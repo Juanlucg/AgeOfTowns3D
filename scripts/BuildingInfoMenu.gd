@@ -23,6 +23,12 @@ var _demolish_button: Button = null
 var _assign_button: Button = null
 var _release_button: Button = null
 var _worker_status_labels: Array[Label] = []
+# Barra de capacidad (graneros): se refresca en vivo con Economy.changed.
+var _capacity_bar: ProgressBar = null
+var _capacity_value: Label = null
+var _capacity_resource: StringName = &""
+# Seccion de habitantes de una casa: se repuebla en vivo con population_changed.
+var _residents_box: VBoxContainer = null
 
 
 func _ready() -> void:
@@ -40,6 +46,7 @@ func _ready() -> void:
 	sb.content_margin_top = 10
 	sb.content_margin_bottom = 10
 	add_theme_stylebox_override("panel", sb)
+	Economy.changed.connect(_refresh_capacity)
 
 
 func bind(buildings: Buildings, villagers: Villagers = null) -> void:
@@ -47,12 +54,21 @@ func bind(buildings: Buildings, villagers: Villagers = null) -> void:
 	_villagers = villagers
 	if _villagers != null:
 		_villagers.workers_changed.connect(_on_workers_changed)
+		# La lista de habitantes (y su estado) se refresca sola mientras el
+		# menu esta abierto: llegar, mudarse o cambiar de animo.
+		_villagers.population_changed.connect(_on_population_changed)
 
 
 func show_for(record: BuildingRecord, at: Vector2) -> void:
 	_record = record
 	_last_screen_pos = at
 	_worker_status_labels.clear()
+	# Los nodos de la barra anterior se van a liberar con el contenido viejo:
+	# mejor olvidarlos para que Economy.changed no toque nodos muertos.
+	_capacity_bar = null
+	_capacity_value = null
+	_capacity_resource = &""
+	_residents_box = null
 	# Click-catcher fullscreen para absorber clics fuera del menu.
 	if _catcher == null:
 		_catcher = ColorRect.new()
@@ -88,6 +104,9 @@ func show_for(record: BuildingRecord, at: Vector2) -> void:
 	if def.description != "":
 		_content.add_child(HSeparator.new())
 		_build_description(_content, def.description)
+	if def.housing_capacity > 0:
+		_content.add_child(HSeparator.new())
+		_build_residents(_content, def, record)
 	if def.capacity > 0:
 		_content.add_child(HSeparator.new())
 		_build_capacity(_content, def.capacity, def.capacity_resource)
@@ -193,7 +212,7 @@ func _build_description(parent: VBoxContainer, text: String) -> void:
 	parent.add_child(desc)
 
 
-func _build_capacity(parent: VBoxContainer, max: int, resource: StringName) -> void:
+func _build_capacity(parent: VBoxContainer, _max: int, resource: StringName) -> void:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 6)
 	parent.add_child(row)
@@ -204,16 +223,98 @@ func _build_capacity(parent: VBoxContainer, max: int, resource: StringName) -> v
 	row.add_child(label)
 	var bar := ProgressBar.new()
 	bar.min_value = 0
-	bar.max_value = max
+	bar.max_value = 1
 	bar.value = 0
 	bar.show_percentage = false
 	bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	bar.custom_minimum_size = Vector2(0, 14)
 	row.add_child(bar)
 	var value_label := Label.new()
-	value_label.text = "0/%d" % max
+	value_label.text = "0/0"
 	value_label.add_theme_font_size_override("font_size", 12)
 	row.add_child(value_label)
+	_capacity_bar = bar
+	_capacity_value = value_label
+	_capacity_resource = resource
+	_refresh_capacity()
+
+
+# Muestra el uso/capacidad REALES de Economy para el recurso del edificio (el
+# def.capacity es solo el umbral para decidir si se pinta la barra). Antes la
+# barra se quedaba siempre a 0 y usaba un numero fijo del def.
+func _refresh_capacity() -> void:
+	if _capacity_bar == null or not is_instance_valid(_capacity_bar):
+		return
+	var used := int(roundf(Economy.storage_used_for(_capacity_resource)))
+	var cap := int(roundf(Economy.storage_capacity_for(_capacity_resource)))
+	_capacity_bar.max_value = maxi(1, cap)
+	_capacity_bar.value = used
+	if _capacity_value != null and is_instance_valid(_capacity_value):
+		_capacity_value.text = "%d/%d" % [used, cap]
+
+
+# Habitantes de una casa (edificios con housing_capacity > 0). Crea el
+# contenedor de la seccion; el contenido lo pone _populate_residents(), que se
+# puede volver a llamar para refrescar en vivo.
+func _build_residents(parent: VBoxContainer, def: BuildingDef, record: BuildingRecord) -> void:
+	_residents_box = VBoxContainer.new()
+	_residents_box.add_theme_constant_override("separation", 4)
+	parent.add_child(_residents_box)
+	_populate_residents(def, record)
+
+
+func _populate_residents(def: BuildingDef, record: BuildingRecord) -> void:
+	if _residents_box == null or not is_instance_valid(_residents_box):
+		return
+	for c in _residents_box.get_children():
+		_residents_box.remove_child(c)
+		c.queue_free()
+	var residents: Array = []
+	if _villagers != null:
+		residents = _villagers.residents_of(record.pos)
+	var title := Label.new()
+	title.text = "Habitantes  %d/%d" % [residents.size(), def.housing_capacity]
+	title.add_theme_font_size_override("font_size", 12)
+	title.add_theme_color_override("font_color", Color(1, 1, 1, 0.65))
+	_residents_box.add_child(title)
+	if residents.is_empty():
+		var empty := Label.new()
+		empty.text = "Sin habitantes"
+		empty.add_theme_font_size_override("font_size", 12)
+		empty.add_theme_color_override("font_color", Color(1, 1, 1, 0.45))
+		_residents_box.add_child(empty)
+		return
+	for villager in residents:
+		if not is_instance_valid(villager):
+			continue
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 6)
+		_residents_box.add_child(row)
+		var avatar := ColorRect.new()
+		avatar.custom_minimum_size = Vector2(20, 20)
+		avatar.color = villager.mood_color()
+		row.add_child(avatar)
+		var name_label := Label.new()
+		name_label.text = villager.display_name
+		name_label.add_theme_font_size_override("font_size", 12)
+		name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(name_label)
+		var mood := Label.new()
+		mood.text = villager.mood_text()
+		mood.add_theme_font_size_override("font_size", 12)
+		mood.add_theme_color_override("font_color", villager.mood_color())
+		row.add_child(mood)
+
+
+# Refresca la seccion de habitantes cuando cambia la poblacion (llegada,
+# mudanza, dia nuevo...). Solo si el menu esta abierto en una casa.
+func _on_population_changed(_population: int, _housing: int, _workers: int) -> void:
+	if _record == null or not visible or _buildings == null:
+		return
+	var def := _buildings.get_def(_record.type)
+	if def == null or def.housing_capacity <= 0:
+		return
+	_populate_residents(def, _record)
 
 
 func _build_workers(parent: VBoxContainer, def: BuildingDef, assigned: int, position: Vector2) -> void:

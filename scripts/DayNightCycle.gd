@@ -578,14 +578,14 @@ func _apply_lighting() -> void:
 	_env.ambient_light_color = Color(0.35, 0.45, 0.65).lerp(_scolor(AMBIENT_DAY_BY_SEASON, k), day_curve)
 
 	# Lo que solo depende de la estacion (paleta del terreno, tinte del
-	# follaje, color de la niebla) se refresca solo cuando la estacion avanza.
-	# get_season_progress() cambia una vez por dia de juego, no por frame: antes
-	# esto reescribia 6 uniforms + 3 del follaje 60 veces por segundo para
-	# poner exactamente los mismos valores.
+	# follaje, color de la niebla) se refresca solo cuando la estacion avanza o
+	# cuando k se ha movido lo suficiente. get_season_progress() incluye la hora
+	# y cambia un pelin cada frame, asi que sin umbral esto reescribia los
+	# uniforms casi a 60 Hz. Con 0.004 el salto es imperceptible.
 	# u_snow_cover / u_wet / u_rain_ripple ya los escribe _update_ground_weather(),
 	# que corre despues en el mismo frame: aqui se escribian por duplicado.
 	var season := get_season()
-	if season != _last_season or not is_equal_approx(k, _last_k):
+	if season != _last_season or absf(k - _last_k) > 0.004:
 		_last_season = season
 		_last_k = k
 		if _terrain_mat != null:

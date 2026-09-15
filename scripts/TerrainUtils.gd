@@ -15,10 +15,14 @@ static func catmull1(p0: float, p1: float, p2: float, p3: float, t: float) -> fl
 
 
 static func bicubic(data: PackedFloat32Array, w: int, h: int, fx: float, fy: float) -> float:
-	var x0 := int(fx) - 1
-	var y0 := int(fy) - 1
-	var tx := fx - int(fx)
-	var ty := fy - int(fy)
+	# Se cachea la parte entera: int() sobre float no es gratis y esto se llama
+	# cientos de miles de veces al construir la malla y colocar vegetacion.
+	var ix := int(fx)
+	var iy := int(fy)
+	var x0 := ix - 1
+	var y0 := iy - 1
+	var tx := fx - ix
+	var ty := fy - iy
 	var ya := clampi(y0, 0, h - 1)
 	var yb := clampi(y0 + 1, 0, h - 1)
 	var yc := clampi(y0 + 2, 0, h - 1)

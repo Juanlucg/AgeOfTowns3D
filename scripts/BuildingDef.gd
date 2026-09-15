@@ -26,6 +26,15 @@ enum Biome { LLANURA = 0, BOSQUE = 1, MONTANA = 2 }
 @export var worker_count: int = 0
 @export var worker_names: PackedStringArray = PackedStringArray()
 @export var housing_capacity: int = 0
+# Felicidad diaria que aporta a cada aldeano (plaza).
+@export var happiness_bonus: float = 0.0
+# Necesaria para que lleguen aldeanos nuevos (crecimiento).
+@export var attracts_growth: bool = false
+# Punto de reunion: los aldeanos sin trabajo se juntan aqui de dia.
+@export var gathering_point: bool = false
+# Radio de la zona de actuacion (aserradero). 0 = sin zona. Dos edificios con
+# zona no pueden solaparla.
+@export var work_radius: float = 0.0
 
 
 # Helpers que Buildings.gd usaba implicitamente.

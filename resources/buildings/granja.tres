@@ -11,7 +11,7 @@ cost = {
 "madera": 25.0
 }
 prod_resource = &"comida"
-prod_amount = 2.0
+prod_amount = 1.0
 prod_interval = 5.0
 footprint = 1.0
 biomes = Array[int]([0])

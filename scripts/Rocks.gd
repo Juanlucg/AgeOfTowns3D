@@ -50,24 +50,26 @@ func _populate() -> void:
 			if Terrain.distance_to_water(pos) < 0.5:
 				y += STEP
 				continue
-			var cls: String = Terrain.terrain_type(pos)
+			# La altura se consulta como maximo una vez por celda y se reutiliza
+			# para decidir la probabilidad, la escala y el apoyo de la roca. En
+			# monte/playa/nieve no se calcula: prob es 0 y no hace falta.
+			var cls := Terrain.class_at(pos)
 			var prob := 0.0
+			var h := 0.0
 			match cls:
-				"bosque":
+				Terrain.CLASS_FOREST:
 					prob = FOREST_PROB
-				"llanura":
-					prob = PLAINS_PROB
-					if Terrain.height_at(pos) > FOOTHILL_HEIGHT:
-						prob = FOOTHILL_PROB
-				_:
-					prob = 0.0
+				Terrain.CLASS_PLAINS:
+					h = Terrain.height_at(pos)
+					prob = FOOTHILL_PROB if h > FOOTHILL_HEIGHT else PLAINS_PROB
 			if prob > 0.0 and rng.randf() < prob:
-				var hgt := clampf((Terrain.height_at(pos) - 3.0) / 4.0, 0.0, 1.0)
+				if cls == Terrain.CLASS_FOREST:
+					h = Terrain.height_at(pos)
+				var hgt := clampf((h - 3.0) / 4.0, 0.0, 1.0)
 				var s := lerpf(SCALE_MIN, SCALE_MAX, hgt) * rng.randf_range(0.8, 1.25)
 				var variant := rng.randi_range(0, 2)
 				var yaw := rng.randf_range(0.0, TAU)
 				var basis := Basis(Vector3.UP, yaw).scaled(Vector3(s, s, s))
-				var h: float = Terrain.height_at(pos)
 				var t := Transform3D(basis, Vector3(pos.x, h + sy[variant] * s * 1.0, pos.y))
 				match variant:
 					0:

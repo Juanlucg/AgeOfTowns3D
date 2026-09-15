@@ -15,6 +15,8 @@
 [ext_resource type="Script" uid="uid://bw5xels6vxjec" path="res://scripts/OpenSea.gd" id="14_sea"]
 [ext_resource type="Script" uid="uid://bj7q14ed3o2iu" path="res://scripts/Villagers.gd" id="15_villagers"]
 [ext_resource type="Script" path="res://scripts/NavigationWorld.gd" id="16_navigation"]
+[ext_resource type="Script" path="res://scripts/GameOverOverlay.gd" id="17_game_over"]
+[ext_resource type="Script" path="res://scripts/Paths.gd" id="18_paths"]
 
 [node name="Main" type="Node3D" unique_id=1696096527]
 script = ExtResource("12_main")
@@ -54,6 +56,11 @@ script = ExtResource("5_rocks")
 script = ExtResource("7_build")
 camera_path = NodePath("../CameraRig")
 
+[node name="Paths" type="Node3D" parent="." unique_id=1881301568]
+script = ExtResource("18_paths")
+camera_path = NodePath("../CameraRig")
+terrain_path = NodePath("../Ground")
+
 [node name="Villagers" type="Node3D" parent="." unique_id=1881301567]
 script = ExtResource("15_villagers")
 buildings_path = NodePath("../Buildings")
@@ -79,6 +86,7 @@ day_night_path = NodePath("../DayNightCycle")
 [node name="BuildMenu" type="CanvasLayer" parent="." unique_id=829077859]
 script = ExtResource("10_menu")
 buildings_path = NodePath("../Buildings")
+paths_path = NodePath("../Paths")
 
 [node name="DevTools" type="CanvasLayer" parent="." unique_id=987654321]
 script = ExtResource("11_dev")
@@ -89,3 +97,6 @@ buildings_path = NodePath("../Buildings")
 
 [node name="BuildingInfoMenu" type="PanelContainer" parent="InfoLayer" unique_id=1111111111]
 script = ExtResource("13_info")
+
+[node name="GameOverOverlay" type="CanvasLayer" parent="." unique_id=2222222222]
+script = ExtResource("17_game_over")

@@ -5,7 +5,7 @@ class_name TerrainMesh
 # de cada bioma con smoothstep: transiciones infinitamente suaves y sin
 # resolucion de textura, nitidas a cualquier zoom.
 
-const CELL := 0.6  # 0.45 -> 890k triangulos; 0.6 -> ~445k (a simple vista igual)
+const CELL := 0.6  # 0.45 -> ~890k triangulos; 0.6 -> ~500k (a simple vista igual)
 
 
 # Material del terreno, expuesto para que DayNightCycle ajuste sus uniforms
@@ -13,7 +13,7 @@ const CELL := 0.6  # 0.45 -> 890k triangulos; 0.6 -> ~445k (a simple vista igual
 # lo que obligaba a que la malla existiese ya en el _ready de este nodo.
 var terrain_material: ShaderMaterial
 
-# La malla son 445k vertices y ~890k triangulos, y cada vertice hace tres
+# La malla son ~250k vertices y ~500k triangulos, y cada vertice hace tres
 # consultas al terreno (una de ellas bicubica): ~2,2 s de hilo principal
 # congelado. El calculo es matematica pura sobre arrays, asi que se hace en un
 # hilo del WorkerThreadPool y solo la creacion del ArrayMesh (rapida, es subir
@@ -148,6 +148,8 @@ func _make_material() -> ShaderMaterial:
 		uniform float u_snow_cover = 0.0;
 		uniform float u_wet = 0.0;
 		uniform float u_rain_ripple = 0.0;
+		uniform sampler2D u_path_mask : filter_linear;
+		uniform vec3 u_path_color = vec3(0.62, 0.54, 0.42);
 
 		varying vec4 custom0;
 
@@ -175,6 +177,12 @@ func _make_material() -> ShaderMaterial:
 			float plains_hi = smoothstep(2.45, 2.3, h);
 			float t_forest = plains_lo * plains_hi * smoothstep(0.06, 0.10, forest);
 			land = mix(land, u_forest, t_forest);
+
+			// Caminos: mascara pintada sobre el terreno. Al no ser geometria
+			// aparte, se funden entre si (las uniones no se pintan por encima)
+			// y quedan pegados al suelo.
+			float path_mask = texture(u_path_mask, UV).r;
+			land = mix(land, u_path_color, smoothstep(0.4, 0.6, path_mask));
 
 			// Nieve acumulada fina por nevada (no altura, solo clima): capa translucida
 			// sobre llanura/bosque, nunca sobre agua ni playa y menos en roca alta

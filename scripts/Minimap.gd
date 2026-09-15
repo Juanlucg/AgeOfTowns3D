@@ -22,6 +22,13 @@ var _buildings_on_map: Array = []
 # viewport_changed (evita 4 ray-march por frame = ~240 por segundo).
 var _frustum_pts: PackedVector2Array = PackedVector2Array()
 
+# La camara emite viewport_changed casi cada frame mientras se mueve, y el
+# recalculo del frustum son 4 ray-march con consultas de altura. Se agrupa a
+# ~10 Hz: la senal solo marca "sucio" y _process reconstruye con enfriamiento.
+const UPDATE_INTERVAL := 0.1
+var _view_dirty := false
+var _view_cooldown := 0.0
+
 
 func _ready() -> void:
 	_tex = Terrain.make_minimap_texture(TEX_SIZE)
@@ -31,6 +38,21 @@ func _ready() -> void:
 		_cam_rig.viewport_changed.connect(_on_viewport_changed)
 		_recompute_frustum()
 	mouse_filter = Control.MOUSE_FILTER_PASS
+	set_process(false)
+
+
+func _process(delta: float) -> void:
+	if not _view_dirty:
+		set_process(false)
+		return
+	_view_cooldown -= delta
+	if _view_cooldown > 0.0:
+		return
+	_view_cooldown = UPDATE_INTERVAL
+	_view_dirty = false
+	set_process(false)
+	_recompute_frustum()
+	queue_redraw()
 
 
 func _minimap_rect() -> Rect2:
@@ -43,8 +65,8 @@ func _to_minimap(world: Vector2) -> Vector2:
 
 
 func _on_viewport_changed() -> void:
-	_recompute_frustum()
-	queue_redraw()
+	_view_dirty = true
+	set_process(true)
 
 
 func _recompute_frustum() -> void:
@@ -83,7 +105,7 @@ func _on_building(type: StringName, pos: Vector2) -> void:
 
 
 func _on_building_demolished(_type: StringName, pos: Vector2) -> void:
-	for i in _buildings_on_map.size() - 1:
+	for i in range(_buildings_on_map.size() - 1, -1, -1):
 		if _buildings_on_map[i].pos.distance_to(pos) < 0.5:
 			_buildings_on_map.remove_at(i)
 			return
