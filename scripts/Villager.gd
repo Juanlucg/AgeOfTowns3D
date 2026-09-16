@@ -12,6 +12,14 @@ const HOMELESS_SHIRT_COLOR := Color(0.52, 0.45, 0.38)
 ## Tolerancia al pisar un puente: el NavigationAgent puede devolver un punto un
 ## poco fuera del ancho visual del tablero.
 const BRIDGE_TOL := 0.8
+## Radio desde el que se busca un camino para seguirlo (m).
+const PATH_SEEK_RADIUS := 6.0
+## Avance por el camino entre dos objetivos intermedios (m).
+const PATH_LOOKAHEAD := 3.0
+## Distancia para dar por alcanzado un objetivo intermedio del camino.
+const PATH_WAYPOINT_DISTANCE := 0.5
+## Tope de objetivos intermedios seguidos sin llegar al destino (evita bucles).
+const MAX_PATH_HOPS := 40
 
 var home_position := Vector2.ZERO
 var home_door_position := Vector2.ZERO
@@ -37,6 +45,13 @@ var _resting := false
 ## A la hora de comer vuelve a casa; mientras dura no trabaja ni deambula.
 var _at_meal := false
 var _target := Vector2.ZERO
+## Destino final del trayecto actual. `_target` puede ser un punto intermedio
+## del camino que acerca a el, no necesariamente el destino.
+var _destination := Vector2.ZERO
+## Camino que se esta siguiendo ({} = navegacion directa por el terreno).
+var _follow_stroke: Dictionary = {}
+## Objetivos intermedios seguidos en el trayecto actual (tope de seguridad).
+var _path_hops := 0
 var _wait_time := 0.0
 var _visual: Node3D
 var _shirt_material: StandardMaterial3D
@@ -66,8 +81,10 @@ func assign_home(home: Vector2, door_offset: Vector2) -> void:
 		home_exit_direction = door_offset.normalized()
 	has_home = true
 	if not _at_work:
-		_target = home_door_position
-		_set_navigation_target()
+		_destination = home_door_position
+		_follow_stroke = {}
+		_path_hops = 0
+		_route_or_direct()
 	_update_visual_state()
 
 
@@ -82,8 +99,10 @@ func clear_home() -> void:
 	home_exit_direction = Vector2(0.0, -1.0)
 	has_home = false
 	if not _at_work:
-		_target = home_door_position
-		_set_navigation_target()
+		_destination = home_door_position
+		_follow_stroke = {}
+		_path_hops = 0
+		_route_or_direct()
 	_update_visual_state()
 
 
@@ -136,10 +155,10 @@ func set_work_schedule(at_work: bool) -> void:
 	if _at_work:
 		_choose_target()
 	else:
-		_target = _rest_target()
-		# Al volver a casa hay que reorientar tambien el agente de navegacion;
-		# si no, sigue avanzando por la ruta antigua hacia el trabajo.
-		_set_navigation_target()
+		_destination = _rest_target()
+		_follow_stroke = {}
+		_path_hops = 0
+		_route_or_direct()
 	_update_visual_state()
 
 
@@ -150,8 +169,10 @@ func set_meal(eating: bool) -> void:
 		return
 	_at_meal = eating
 	if _stay_home():
-		_target = home_door_position
-		_set_navigation_target()
+		_destination = _rest_target()
+		_follow_stroke = {}
+		_path_hops = 0
+		_route_or_direct()
 	else:
 		_choose_target()
 	_update_visual_state()
@@ -243,17 +264,10 @@ func _process(delta: float) -> void:
 		_wait_time -= delta
 		return
 
+	var arrive := ARRIVAL_DISTANCE if _follow_stroke.is_empty() else PATH_WAYPOINT_DISTANCE
 	var distance := current.distance_to(_target)
-	if distance <= ARRIVAL_DISTANCE:
-		if _stay_home():
-			# Ya en casa (noche o comida): se queda (reafirma el objetivo por si
-			# lo empujan) en vez de buscar un nuevo punto y dar vueltas.
-			_wait_time = randf_range(2.0, 5.0)
-			_target = home_door_position
-			_set_navigation_target()
-			return
-		_wait_time = randf_range(0.8, 2.5)
-		_choose_target()
+	if distance <= arrive:
+		_on_target_reached()
 		return
 
 	var navigation_target := _target
@@ -293,44 +307,109 @@ func _process(delta: float) -> void:
 
 
 func _choose_target() -> void:
+	_destination = _next_destination()
+	_follow_stroke = {}
+	_path_hops = 0
+	_route_or_direct()
+
+
+# Ir al destino en directo si no hay un camino razonable que ayude.
+func _route_or_direct() -> void:
+	if _route_via_path():
+		return
+	_target = _destination
+	_set_navigation_target()
+
+
+# Destino final del modo actual: trabajo, casa/hoguera o deambulacion.
+func _next_destination() -> Vector2:
 	if _at_work:
 		var angle := randf_range(0.0, TAU)
-		_target = work_position + Vector2(cos(angle), sin(angle)) * randf_range(0.5, 1.0)
-		_set_navigation_target()
-		return
+		return work_position + Vector2(cos(angle), sin(angle)) * randf_range(0.5, 1.0)
 	if _stay_home():
-		# Descanso o comida: sin deambular, se queda en casa o en la hoguera.
-		_target = _rest_target()
-		_set_navigation_target()
-		return
+		# Descanso o comida: casa o hoguera.
+		return _rest_target()
 	# Punto base de deambulacion: la plaza si la hay (reunion), si no la casa.
 	var base := gathering_position if has_gathering else home_door_position
 	var ref_dir := Vector2(0.0, -1.0) if has_gathering else home_exit_direction
-	# Preferir caminos: si hay alguno cerca del punto base, se va a el.
-	if Paths.instance != null and Paths.instance.count() > 0:
-		for _attempt in 6:
-			var candidate := base + Vector2(
-				randf_range(-WANDER_RADIUS, WANDER_RADIUS),
-				randf_range(-WANDER_RADIUS, WANDER_RADIUS))
-			if not Terrain.is_water(candidate) and Paths.instance.is_path(candidate):
-				_target = candidate
-				_set_navigation_target()
-				return
 	var side := Vector2(-ref_dir.y, ref_dir.x)
 	for _attempt in 8:
 		var candidate := base + ref_dir * randf_range(0.8, WANDER_RADIUS) \
 			+ side * randf_range(-1.0, 1.0)
 		if not Terrain.is_water(candidate):
-			_target = candidate
-			break
+			return candidate
+	return base
+
+
+# Intenta llevar al aldeano por un camino hacia `_destination`. Devuelve true si
+# fijo un objetivo intermedio sobre el camino; false para navegar en directo.
+func _route_via_path() -> bool:
+	if Paths.instance == null or _path_hops >= MAX_PATH_HOPS:
+		_follow_stroke = {}
+		return false
+	var current := Vector2(global_position.x, global_position.z)
+	# 1) Continuar el tramo en curso si sigue existiendo y acercando al destino.
+	if not _follow_stroke.is_empty() \
+			and Paths.instance.has_stroke(int(_follow_stroke["id"])):
+		var plan := Paths.instance.plan_along_stroke(
+			_follow_stroke, current, _destination, PATH_LOOKAHEAD)
+		if bool(plan["use"]):
+			_path_hops += 1
+			_target = plan["point"]
+			_set_navigation_target()
+			return true
+	_follow_stroke = {}
+	# 2) Elegir el mejor tramo cercano (incluye el siguiente tramo de la cadena).
+	var choice := Paths.instance.plan_via_nearest(
+		current, _destination, PATH_SEEK_RADIUS, PATH_LOOKAHEAD)
+	if not bool(choice["use"]):
+		return false
+	_follow_stroke = choice["stroke"]
+	_path_hops += 1
+	_target = choice["point"]
 	_set_navigation_target()
+	return true
+
+
+# Al alcanzar el objetivo actual: si era un punto intermedio del camino y este
+# sigue siendo util, avanza al siguiente; si es el destino, cierra el trayecto.
+func _on_target_reached() -> void:
+	# Destino final: no seguir enganchando caminos (evita dar vueltas al llegar).
+	if _target.distance_squared_to(_destination) <= 0.0001:
+		_follow_stroke = {}
+		if _stay_home():
+			# Ya en casa (noche o comida): se queda (reafirma el objetivo por si
+			# lo empujan) en vez de buscar un nuevo punto y dar vueltas.
+			_wait_time = randf_range(2.0, 5.0)
+			_set_navigation_target()
+			return
+		_wait_time = randf_range(0.8, 2.5)
+		_choose_target()
+		return
+	# Objetivo intermedio: seguir el camino, o ir en directo si ya no ayuda.
+	if not _follow_stroke.is_empty() and _route_via_path():
+		return
+	_follow_stroke = {}
+	_target = _destination
+	_set_navigation_target()
+
+
+## Estado interno del movimiento respecto a los caminos (depuracion).
+func path_state() -> String:
+	if not _follow_stroke.is_empty():
+		return "siguiendo_camino"
+	if Paths.instance != null and Paths.instance.is_path(Vector2(global_position.x, global_position.z)):
+		return "sobre_camino"
+	return "fuera_de_camino"
 
 
 func _set_navigation_target() -> void:
 	if _navigation_agent == null:
 		return
-	_navigation_agent.target_position = Vector3(
-		_target.x, Terrain.height_at(_target), _target.y)
+	var y := Terrain.height_at(_target)
+	if Bridges.instance != null and Bridges.instance.is_bridge(_target, BRIDGE_TOL):
+		y = Bridges.instance.deck_height_at(_target, BRIDGE_TOL)
+	_navigation_agent.target_position = Vector3(_target.x, y, _target.y)
 
 
 # Meshes y materiales compartidos entre aldeanos: antes cada uno creaba sus

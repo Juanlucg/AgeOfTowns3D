@@ -35,6 +35,16 @@ const MAX_STROKE_LEN := 10.0
 const MIN_PIECE := 1.0
 const MASK_SIZE := 2048         # resolucion de la mascara (px sobre el mapa)
 const MASK_UPDATE_INTERVAL := 0.1
+## Lado de la celda del indice espacial (m) para consultas "cerca de un punto".
+const GRID_CELL := 8.0
+## Tolerancia para considerar que un punto cae sobre un puente.
+const BRIDGE_TOL := 0.8
+## El camino solo se sigue si no alarga el viaje mas que esto respecto a ir
+## recto: `via <= directa * ACCEPT_FACTOR + ACCEPT_SLACK`.
+const ACCEPT_FACTOR := 1.6
+const ACCEPT_SLACK := 2.5
+## Avance minimo por el camino entre dos objetivos (evita bucles en el sitio).
+const MIN_ADVANCE := 0.6
 const PATH_COLOR := Color(0.62, 0.54, 0.42)
 const GHOST_COLOR := Color(0.92, 0.84, 0.55, 0.35)
 
@@ -44,6 +54,9 @@ static var instance: Paths = null
 var _cam_rig: CameraController3D
 var _strokes: Array = []        # Array[ { id, pts: PackedVector2Array, bounds: Rect2 } ]
 var _next_stroke_id := 0
+## Indice espacial: Vector2i(celda) -> Array[int] indices de `_strokes`.
+## Se reconstruye al cambiar los caminos (no en cada frame).
+var _grid: Dictionary = {}
 var _selected_stroke: Dictionary = {}
 var _stroke_marker: MeshInstance3D = null
 var _current := PackedVector2Array()
@@ -68,6 +81,7 @@ func _ready() -> void:
 	_mask.fill(Color(0, 0, 0, 1))
 	_tex = ImageTexture.create_from_image(_mask)
 	_bind_terrain_material()
+	_rebuild_grid()
 	set_process(false)
 
 
@@ -112,7 +126,7 @@ func is_placing() -> bool:
 
 func is_path(p: Vector2) -> bool:
 	var hw := path_width * 0.5
-	for s in _strokes:
+	for s in _strokes_near(p):
 		if _near(s, p, hw):
 			return true
 	if _current.size() >= 2:
@@ -120,8 +134,15 @@ func is_path(p: Vector2) -> bool:
 	return false
 
 
+# Bonus de velocidad sobre el camino. Sobre agua solo se acelera si se pisa un
+# puente (el trazado puede cruzar el rio, pero ahi no hay camino pintado).
 func speed_multiplier_at(p: Vector2) -> float:
-	return SPEED_MULT if is_path(p) else 1.0
+	if not is_path(p):
+		return 1.0
+	if Terrain.is_water(p) and (Bridges.instance == null \
+			or not Bridges.instance.is_bridge(p, BRIDGE_TOL)):
+		return 1.0
+	return SPEED_MULT
 
 
 func count() -> int:
@@ -171,6 +192,231 @@ static func distance_sq_to_stroke(pts: PackedVector2Array, pos: Vector2) -> floa
 	return best
 
 
+## Punto de la polilinea `pts` mas cercano a `pos`.
+static func closest_point_on_stroke(pts: PackedVector2Array, pos: Vector2) -> Vector2:
+	var best := Vector2.ZERO
+	var best_d := 1.0e18
+	for i in range(pts.size() - 1):
+		var a := pts[i]
+		var ab := pts[i + 1] - a
+		var denom := ab.length_squared()
+		var t := 0.0
+		if denom > 0.000001:
+			t = clampf((pos - a).dot(ab) / denom, 0.0, 1.0)
+		var q := a + ab * t
+		var d := pos.distance_squared_to(q)
+		if d < best_d:
+			best_d = d
+			best = q
+	return best
+
+
+## True si el camino con ese id sigue existiendo (p. ej. no fue demolido).
+func has_stroke(id: int) -> bool:
+	for s in _strokes:
+		if int(s["id"]) == id:
+			return true
+	return false
+
+
+## Camino MAS CERCANO a `pos` a `max_dist` metros como maximo, o {}.
+## Consulta solo las celdas del indice espacial dentro de ese radio.
+func nearest_stroke(pos: Vector2, max_dist: float) -> Dictionary:
+	var best: Dictionary = {}
+	var best_d := max_dist * max_dist
+	var r := int(ceil(max_dist / GRID_CELL))
+	var cx := int(floor(pos.x / GRID_CELL))
+	var cy := int(floor(pos.y / GRID_CELL))
+	var seen := {}
+	for gx in range(cx - r, cx + r + 1):
+		for gy in range(cy - r, cy + r + 1):
+			for i in Array(_grid.get(Vector2i(gx, gy), [])):
+				if seen.has(i):
+					continue
+				seen[i] = true
+				var s: Dictionary = _strokes[i]
+				var d2 := distance_sq_to_stroke(s["pts"], pos)
+				if d2 <= best_d:
+					best_d = d2
+					best = s
+	return best
+
+
+## Plan para seguir `stroke` desde `from` hacia `dest`, avanzando `lookahead`
+## metros por el camino hasta el proximo objetivo. Devuelve:
+##   { use:bool, point:Vector2, entry:Vector2, exit:Vector2 }
+## `use` es false si el camino no ayuda (se aleja/detour) o si no hay avance.
+## Nunca devuelve un punto sobre agua sin puente.
+func plan_along_stroke(stroke: Dictionary, from: Vector2, dest: Vector2,
+		lookahead: float) -> Dictionary:
+	var out := {"use": false, "point": dest, "entry": from, "exit": dest,
+		"via": 0.0, "path_len": 0.0}
+	var pts: PackedVector2Array = stroke.get("pts", PackedVector2Array())
+	if pts.size() < 2:
+		return out
+	var cum := _cum_lengths(pts)
+	var ce := _closest_param(pts, cum, from)
+	var cx := _closest_param(pts, cum, dest)
+	var se: float = ce["arc"]
+	var sx: float = cx["arc"]
+	var path_len := absf(sx - se)
+	var direct := from.distance_to(dest)
+	var via: float = ce["dist"] + path_len + cx["dist"]
+	if via > direct * ACCEPT_FACTOR + ACCEPT_SLACK:
+		return out
+	# Objetivo: `lookahead` metros por el camino hacia el punto de salida.
+	var arc := sx
+	if path_len > lookahead:
+		arc = se + signf(sx - se) * lookahead
+	var point := _point_at_arc(pts, cum, arc)
+	if not _point_usable(point):
+		point = _nearest_usable_arc(pts, cum, arc, se)
+	if not _point_usable(point):
+		return out
+	# Evitar quedarnos clavados en el sitio (no hay avance real).
+	if point.distance_to(from) < MIN_ADVANCE and path_len <= MIN_ADVANCE:
+		return out
+	out["use"] = true
+	out["point"] = point
+	out["entry"] = ce["point"]
+	out["exit"] = cx["point"]
+	out["via"] = via
+	out["path_len"] = path_len
+	return out
+
+
+## Elige el camino cercano cuyo seguimiento hacia `dest` sea mejor (menor
+## desvio) desde `from`. Devuelve {} o el mejor plan mas su trazo:
+##   { use:true, stroke, point, entry, exit, via }
+func plan_via_nearest(from: Vector2, dest: Vector2, max_dist: float,
+		lookahead: float) -> Dictionary:
+	var best := {"use": false}
+	var best_via := 1.0e18
+	var max2 := max_dist * max_dist
+	var r := int(ceil(max_dist / GRID_CELL))
+	var cx := int(floor(from.x / GRID_CELL))
+	var cy := int(floor(from.y / GRID_CELL))
+	var seen := {}
+	for gx in range(cx - r, cx + r + 1):
+		for gy in range(cy - r, cy + r + 1):
+			for i in Array(_grid.get(Vector2i(gx, gy), [])):
+				if seen.has(i):
+					continue
+				seen[i] = true
+				var s: Dictionary = _strokes[i]
+				if distance_sq_to_stroke(s["pts"], from) > max2:
+					continue
+				var plan := plan_along_stroke(s, from, dest, lookahead)
+				if not bool(plan["use"]):
+					continue
+				if float(plan["via"]) < best_via:
+					best_via = float(plan["via"])
+					best = plan.duplicate()
+					best["stroke"] = s
+	return best
+
+
+# --- Indice espacial ---
+
+func _rebuild_grid() -> void:
+	_grid.clear()
+	var pad := path_width * 0.5 + 0.5
+	for i in range(_strokes.size()):
+		var b: Rect2 = _strokes[i]["bounds"]
+		var x0 := int(floor((b.position.x - pad) / GRID_CELL))
+		var x1 := int(floor((b.end.x + pad) / GRID_CELL))
+		var y0 := int(floor((b.position.y - pad) / GRID_CELL))
+		var y1 := int(floor((b.end.y + pad) / GRID_CELL))
+		for gx in range(x0, x1 + 1):
+			for gy in range(y0, y1 + 1):
+				var key := Vector2i(gx, gy)
+				if not _grid.has(key):
+					_grid[key] = []
+				(_grid[key] as Array).append(i)
+
+
+# Caminos cuyo `bounds` solapa la celda de `pos` (ya incluye la tolerancia de
+# seleccion al indexar, asi que basta con la celda que contiene el punto).
+func _strokes_near(pos: Vector2) -> Array:
+	var key := Vector2i(int(floor(pos.x / GRID_CELL)), int(floor(pos.y / GRID_CELL)))
+	var out: Array = []
+	for i in Array(_grid.get(key, [])):
+		out.append(_strokes[i])
+	return out
+
+
+# --- Geometria de polilineas ---
+
+static func _cum_lengths(pts: PackedVector2Array) -> PackedFloat32Array:
+	var cum := PackedFloat32Array()
+	cum.resize(pts.size())
+	for i in range(1, pts.size()):
+		cum[i] = cum[i - 1] + pts[i - 1].distance_to(pts[i])
+	return cum
+
+
+# Punto mas cercano de la polilinea a `pos`: { arc, dist, point }.
+static func _closest_param(pts: PackedVector2Array, cum: PackedFloat32Array,
+		pos: Vector2) -> Dictionary:
+	var best_d := 1.0e18
+	var best_arc := 0.0
+	var best_point := pts[0]
+	for i in range(pts.size() - 1):
+		var a := pts[i]
+		var ab := pts[i + 1] - a
+		var seglen := sqrt(ab.length_squared())
+		var denom := ab.length_squared()
+		var t := 0.0
+		if denom > 0.000001:
+			t = clampf((pos - a).dot(ab) / denom, 0.0, 1.0)
+		var q := a + ab * t
+		var d := pos.distance_squared_to(q)
+		if d < best_d:
+			best_d = d
+			best_arc = cum[i] + seglen * t
+			best_point = q
+	return {"arc": best_arc, "dist": sqrt(best_d), "point": best_point}
+
+
+static func _point_at_arc(pts: PackedVector2Array, cum: PackedFloat32Array,
+		arc: float) -> Vector2:
+	var total := cum[cum.size() - 1]
+	arc = clampf(arc, 0.0, total)
+	for i in range(pts.size() - 1):
+		var seg := cum[i + 1] - cum[i]
+		if arc <= cum[i + 1] or i == pts.size() - 2:
+			var t := 0.0 if seg <= 0.000001 else (arc - cum[i]) / seg
+			return pts[i].lerp(pts[i + 1], clampf(t, 0.0, 1.0))
+	return pts[pts.size() - 1]
+
+
+# Punto valido para caminar: tierra, o un puente si esta sobre agua.
+static func _point_usable(p: Vector2) -> bool:
+	if not is_finite(p.x) or not is_finite(p.y):
+		return false
+	if not Terrain.is_water(p):
+		return true
+	return Bridges.instance != null and Bridges.instance.is_bridge(p, BRIDGE_TOL)
+
+
+# Desde `arc` (sobre agua sin puente) retrocede hacia `back_to` hasta tierra.
+static func _nearest_usable_arc(pts: PackedVector2Array, cum: PackedFloat32Array,
+		arc: float, back_to: float) -> Vector2:
+	var dir := signf(back_to - arc)
+	if dir == 0.0:
+		return Vector2.INF
+	var a := arc
+	for _k in range(80):
+		a += dir * 0.25
+		if (dir > 0.0 and a >= back_to) or (dir < 0.0 and a <= back_to):
+			a = back_to
+		if _point_usable(_point_at_arc(pts, cum, a)):
+			return _point_at_arc(pts, cum, a)
+		if is_equal_approx(a, back_to):
+			break
+	return Vector2.INF
+
+
 ## Selecciona el camino bajo `pos`. Devuelve true si habia uno.
 func select_at(pos: Vector2) -> bool:
 	var s := stroke_at(pos)
@@ -218,6 +464,7 @@ func demolish_stroke(id: int) -> bool:
 			Bridges.instance.remove_bridge(br)
 	_strokes.remove_at(idx)
 	_rebuild_mask_from_strokes()
+	_rebuild_grid()
 	_flush_mask()
 	stroke_demolished.emit(id)
 	return true
@@ -460,6 +707,7 @@ func _resegment_all() -> void:
 			if not s.is_empty():
 				br["stroke_id"] = int(s["id"])
 	_rebuild_mask_from_strokes()
+	_rebuild_grid()
 
 
 # Crea puentes en los tramos del trazo que cruzan agua (con tierra a los dos
