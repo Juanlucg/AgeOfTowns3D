@@ -655,44 +655,59 @@ func _apply_weather() -> void:
 		var k: float = get_season_progress()
 		rain = _sfloat(RAIN_BY_SEASON, k)
 		snow = _sfloat(SNOW_BY_SEASON, k)
+	# Cuantiza a saltos de 0.05. En modo auto la intensidad viene de
+	# get_season_progress(), que cambia cada frame: sin cuantizar, el guard de
+	# igualdad fallaba siempre y se reconfiguraban las particulas cada frame.
+	rain = snappedf(clampf(rain, 0.0, 1.0), 0.05)
+	snow = snappedf(clampf(snow, 0.0, 1.0), 0.05)
 	if is_equal_approx(rain, _last_rain) and is_equal_approx(snow, _last_snow):
 		return
+	var rain_off := _last_rain <= 0.001
+	var snow_off := _last_snow <= 0.001
 	_last_rain = rain
 	_last_snow = snow
 	if rain > 0.001:
-		var pm := _rain.process_material as ParticleProcessMaterial
-		pm.gravity = Vector3(0.0, -55.0, 0.0)
-		pm.initial_velocity_min = 20.0
-		pm.initial_velocity_max = 28.0
-		pm.scale_min = 1.0
-		pm.scale_max = 1.45
-		pm.color = Color(0.78, 0.88, 1.0, 0.72)
-		# Inclinacion coherente con la direccion (rasante visible)
-		pm.direction = Vector3(0.18, -1.0, 0.08)
-		pm.spread = 7.0
-		pm.damping_min = 0.0
-		pm.damping_max = 0.0
-		_rain.lifetime = 2.2
-		_rain.amount = int(RAIN_PARTICLES * clampf(rain, 0.0, 1.0))
-		_rain.emitting = true
-		_rain.visible = true
+		if rain_off:
+			# La configuracion del material y el tiempo de vida solo hace falta
+			# al encender: no depende de la intensidad.
+			var pm := _rain.process_material as ParticleProcessMaterial
+			pm.gravity = Vector3(0.0, -55.0, 0.0)
+			pm.initial_velocity_min = 20.0
+			pm.initial_velocity_max = 28.0
+			pm.scale_min = 1.0
+			pm.scale_max = 1.45
+			pm.color = Color(0.78, 0.88, 1.0, 0.72)
+			# Inclinacion coherente con la direccion (rasante visible)
+			pm.direction = Vector3(0.18, -1.0, 0.08)
+			pm.spread = 7.0
+			pm.damping_min = 0.0
+			pm.damping_max = 0.0
+			_rain.lifetime = 2.2
+			_rain.amount = RAIN_PARTICLES
+			_rain.emitting = true
+			_rain.visible = true
+		# amount_ratio cambia la densidad SIN reiniciar el sistema (amount si lo
+		# reinicia, y es lo que provocaba el parpadeo al llover).
+		_rain.amount_ratio = rain
 	else:
 		_rain.emitting = false
 		_rain.visible = false
 	if snow > 0.001:
-		var pm := _snow.process_material as ParticleProcessMaterial
-		pm.gravity = Vector3(0.0, -2.2, 0.0)
-		pm.initial_velocity_min = 1.5
-		pm.initial_velocity_max = 3.5
-		pm.scale_min = 1.3
-		pm.scale_max = 1.9
-		pm.color = Color(1.0, 1.0, 1.0, 0.95)
-		pm.damping_min = 0.2
-		pm.damping_max = 0.4
-		_snow.lifetime = 12.0
-		_snow.amount = int(SNOW_PARTICLES * clampf(snow, 0.0, 1.0))
-		_snow.emitting = true
-		_snow.visible = true
+		if snow_off:
+			var pm := _snow.process_material as ParticleProcessMaterial
+			pm.gravity = Vector3(0.0, -2.2, 0.0)
+			pm.initial_velocity_min = 1.5
+			pm.initial_velocity_max = 3.5
+			pm.scale_min = 1.3
+			pm.scale_max = 1.9
+			pm.color = Color(1.0, 1.0, 1.0, 0.95)
+			pm.damping_min = 0.2
+			pm.damping_max = 0.4
+			_snow.lifetime = 12.0
+			_snow.amount = SNOW_PARTICLES
+			_snow.emitting = true
+			_snow.visible = true
+		_snow.amount_ratio = snow
 	else:
 		_snow.emitting = false
 		_snow.visible = false

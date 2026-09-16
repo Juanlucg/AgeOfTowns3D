@@ -61,7 +61,9 @@ func _on_building_built(type: StringName, pos: Vector2) -> void:
 	var def := _buildings.get_def(type)
 	if def == null:
 		return
-	if type == &"casa":
+	# Vivienda: cualquier edificio con housing_capacity > 0 (no el id "casa"
+	# hardcodeado). Trabajo: cualquier edificio con worker_count > 0.
+	if def.housing_capacity > 0:
 		_house_new_residents(pos, def.housing_capacity)
 	elif def.worker_count > 0:
 		_work_groups[pos] = {
@@ -76,7 +78,8 @@ func _on_building_built(type: StringName, pos: Vector2) -> void:
 
 
 func _on_building_demolished(type: StringName, pos: Vector2) -> void:
-	if type == &"casa":
+	var def := _buildings.get_def(type)
+	if def != null and def.housing_capacity > 0:
 		# Los habitantes no desaparecen: se realojan en otra casa con hueco o,
 		# si no la hay, se les quita el hogar. Hay que limpiar los datos internos
 		# de cada Villager, no solo el registro _house_groups: si no, siguen
@@ -135,6 +138,12 @@ func _create_villager(home: Vector2, spawn_offset: Vector2, door_offset: Vector2
 	villager.set_shelter_point(_shelter_pos)
 	add_child(villager)
 	_villagers.append(villager)
+	# Aplica el horario actual: un aldeano que nace de noche (o durante la
+	# comida) debe descansar, no deambular. _on_time_changed no lo corrige
+	# porque solo reaplica cuando cambia la fase del dia.
+	if not _daytime or _meal_time:
+		villager.set_work_schedule(_daytime)
+		villager.set_meal(_meal_time)
 	return villager
 
 
@@ -216,6 +225,10 @@ func _serve_meal() -> void:
 		for villager in _villagers:
 			if is_instance_valid(villager):
 				villager.add_happiness(bonus)
+	# La eficiencia depende de salud/felicidad, que acaban de cambiar con la
+	# comida. Sin reemitirla, la produccion seguia usando la del dia anterior.
+	for group in _work_groups.values():
+		_emit_group_workers(group)
 	_last_meal_fed = fed_ratio >= 1.0
 	if fed_ratio < 1.0:
 		message_requested.emit("Falta comida: los aldeanos pasan hambre")
@@ -246,15 +259,23 @@ func residents_of(home: Vector2) -> Array:
 	return _house_groups.get(home, [])
 
 
-## Primera casa con hueco (capacidad = housing_capacity), o Vector2.INF.
+## Primera casa con hueco (capacidad = housing_capacity de su BuildingDef), o
+## Vector2.INF. La capacidad se lee del def real de cada casa, no de "casa".
 func _find_available_house() -> Vector2:
-	var def := _buildings.get_def(&"casa")
-	if def == null:
-		return Vector2.INF
 	for home in _house_groups:
-		if (_house_groups[home] as Array).size() < def.housing_capacity:
+		var cap := _housing_capacity_at(home)
+		if cap > 0 and (_house_groups[home] as Array).size() < cap:
 			return home
 	return Vector2.INF
+
+
+# Capacidad de la vivienda situada en `home` (0 si no es una vivienda).
+func _housing_capacity_at(home: Vector2) -> int:
+	var rec := _buildings.building_at(home)
+	if rec == null:
+		return 0
+	var def := _buildings.get_def(rec.type)
+	return def.housing_capacity if def != null else 0
 
 
 ## Aloja a los aldeanos que se han quedado sin casa: primero intenta meterlos en
@@ -371,11 +392,11 @@ func _count_homeless() -> int:
 
 
 func _emit_population() -> void:
+	# Capacidad de vivienda = suma de housing_capacity de cada casa con vecinos.
+	# Antes se hacia get_def(&"casa") dentro del bucle, asumiendo un unico tipo.
 	var housing := 0
-	for _home in _house_groups:
-		var def := _buildings.get_def(&"casa")
-		if def != null:
-			housing += def.housing_capacity
+	for home in _house_groups:
+		housing += _housing_capacity_at(home)
 	var workers := 0
 	for group in _work_groups.values():
 		workers += (group["workers"] as Array).size()

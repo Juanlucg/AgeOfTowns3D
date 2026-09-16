@@ -20,6 +20,10 @@ const PATH_LOOKAHEAD := 3.0
 const PATH_WAYPOINT_DISTANCE := 0.5
 ## Tope de objetivos intermedios seguidos sin llegar al destino (evita bucles).
 const MAX_PATH_HOPS := 40
+## Si un paso cae en agua, se replanifica el destino. Sin este enfriamiento se
+## hacia en cada frame mientras el aldeano seguia bloqueado, disparando 8
+## muestras de terreno + un plan de camino por frame y aldeano.
+const BLOCKED_RETRY := 0.25
 
 var home_position := Vector2.ZERO
 var home_door_position := Vector2.ZERO
@@ -53,6 +57,7 @@ var _follow_stroke: Dictionary = {}
 ## Objetivos intermedios seguidos en el trayecto actual (tope de seguridad).
 var _path_hops := 0
 var _wait_time := 0.0
+var _blocked_cooldown := 0.0
 var _visual: Node3D
 var _shirt_material: StandardMaterial3D
 var _walk_phase := 0.0
@@ -251,6 +256,8 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
+	if _blocked_cooldown > 0.0:
+		_blocked_cooldown -= delta
 	var current := Vector2(global_position.x, global_position.z)
 	# De noche, al llegar a casa el aldeano "entra" a dormir: se oculta el
 	# modelo para que no se quede de pie en la puerta.
@@ -279,13 +286,35 @@ func _process(delta: float) -> void:
 				and next_2d.distance_to(_target) < current.distance_to(_target):
 			navigation_target = next_2d
 	var direction := current.direction_to(navigation_target)
-	# Por los caminos y puentes se anda mas rapido.
-	var on_bridge_now := Bridges.instance != null and Bridges.instance.is_bridge(current, BRIDGE_TOL)
 	var speed := WALK_SPEED
 	if Paths.instance != null:
 		speed *= Paths.instance.speed_multiplier_at(current)
+	# Puentes: sobre el agua se avanza a lo largo del eje del tablero (no en
+	# diagonal, que sacaba al aldeano del ancho del puente y lo dejaba tirado en
+	# la orilla). Si el paso recto cae al agua y hay un puente cerca, se va
+	# hacia el eje del puente para subir a el por su extremo. Los aldeanos que
+	# pasan cerca de un puente por tierra no se desvian.
+	var bridge_now := {}
+	if Bridges.instance != null:
+		bridge_now = Bridges.instance.nearest_bridge(current, BRIDGE_TOL)
+	var on_bridge_now := not bridge_now.is_empty()
 	if on_bridge_now:
 		speed = maxf(speed, WALK_SPEED * Bridges.SPEED_MULT)
+	var step_ahead := current + direction * speed * delta
+	if on_bridge_now and (Terrain.is_water(current) or Terrain.is_water(step_ahead)):
+		var ba: Vector2 = bridge_now["a"]
+		var bb: Vector2 = bridge_now["b"]
+		var axis := (bb - ba).normalized()
+		# Sentido: hacia el extremo del puente mas cercano al destino.
+		if _target.distance_squared_to(ba) < _target.distance_squared_to(bb):
+			axis = -axis
+		direction = axis
+	elif not on_bridge_now and Bridges.instance != null and Terrain.is_water(step_ahead):
+		var near := Bridges.instance.nearest_bridge(current, PATH_SEEK_RADIUS)
+		if not near.is_empty():
+			var entry := Bridges.closest_point_on_bridge(near, current)
+			if current.distance_squared_to(entry) > 0.0001:
+				direction = current.direction_to(entry)
 	var next := current + direction * speed * delta
 	var on_bridge_next := Bridges.instance != null and Bridges.instance.is_bridge(next, BRIDGE_TOL)
 	# La guarda de agua no cancela un cruce valido por el puente (con tolerancia
@@ -293,7 +322,14 @@ func _process(delta: float) -> void:
 	if Terrain.is_water(next) and not on_bridge_next and not on_bridge_now:
 		# El navmesh no cubre el agua; sin esta guarda el aldeano puede meterse
 		# en el mar o en un lago en linea recta cuando no hay ruta valida.
-		_choose_target()
+		# Con enfriamiento: si no, un aldeano atascado contra la orilla
+		# replanificaba el destino en cada frame.
+		if _blocked_cooldown <= 0.0:
+			_blocked_cooldown = BLOCKED_RETRY
+			# Si venia siguiendo un camino, reintenta su plan (los puntos del
+			# camino nunca pisan agua) antes que abandonarlo y deambular.
+			if not _route_via_path():
+				_choose_target()
 		return
 	var ground_h := Terrain.height_at(next)
 	if on_bridge_next:

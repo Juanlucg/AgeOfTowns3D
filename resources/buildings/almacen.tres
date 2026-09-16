@@ -22,3 +22,5 @@ capacity = 0
 capacity_resource = &""
 worker_count = 1
 worker_names = PackedStringArray("Almacenero")
+order = 5
+storage_kind = &"warehouse"

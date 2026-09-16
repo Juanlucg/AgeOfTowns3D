@@ -125,18 +125,28 @@ func _ready() -> void:
 	_register_defs()
 
 
-# Crea los BuildingDef por codigo (migrar a .tres en el futuro).
+# Descubre los BuildingDef en res://resources/buildings/*.tres y los ordena por
+# `order`. Anadir un edificio es soltar un .tres: antes habia que mantener
+# listas paralelas (preloads aqui, TYPE_KEYS en BuildMenu y los atajos en
+# project.godot).
 func _register_defs() -> void:
-	# Los BuildingDef se cargan desde .tres en res://resources/buildings/.
-	# Editables desde el inspector sin tocar codigo: ajustar un coste,
-	# anadir un edificio o tunear produccion ya no requiere compilar.
-	_register(preload("res://resources/buildings/granero.tres"))
-	_register(preload("res://resources/buildings/granja.tres"))
-	_register(preload("res://resources/buildings/casa.tres"))
-	_register(preload("res://resources/buildings/aserradero.tres"))
-	_register(preload("res://resources/buildings/cantera.tres"))
-	_register(preload("res://resources/buildings/almacen.tres"))
-	_register(preload("res://resources/buildings/plaza.tres"))
+	var dir := DirAccess.open("res://resources/buildings")
+	if dir == null:
+		push_error("Buildings: no se pudo abrir res://resources/buildings")
+		return
+	var defs: Array[BuildingDef] = []
+	for file in dir.get_files():
+		if not file.ends_with(".tres"):
+			continue
+		var res := load("res://resources/buildings/" + file)
+		if res is BuildingDef:
+			defs.append(res as BuildingDef)
+	defs.sort_custom(func(a: BuildingDef, b: BuildingDef) -> bool:
+		return a.order < b.order)
+	for d in defs:
+		_register(d)
+	if _ids.is_empty():
+		push_error("Buildings: no se cargo ningun BuildingDef desde resources/buildings")
 
 
 func _register(d: BuildingDef) -> void:
@@ -292,7 +302,10 @@ func _nearby(ground: Vector2) -> Array[BuildingRecord]:
 	for dx in [-1, 0, 1]:
 		for dy in [-1, 0, 1]:
 			var key := Vector2i(cell.x + dx, cell.y + dy)
-			var bucket: Array = _grid.get(key, [])
+			# _grid.get(key, []) creaba un Array vacio por celda y frame.
+			var bucket: Variant = _grid.get(key)
+			if bucket == null:
+				continue
 			for b in bucket:
 				_nearby_scratch.append(b)
 	return _nearby_scratch
@@ -307,7 +320,9 @@ func _record_at(pos: Vector2) -> BuildingRecord:
 	for dx in [-1, 0, 1]:
 		for dy in [-1, 0, 1]:
 			var key := Vector2i(cell.x + dx, cell.y + dy)
-			var bucket: Array = _grid.get(key, [])
+			var bucket: Variant = _grid.get(key)
+			if bucket == null:
+				continue
 			for b in bucket:
 				var rec := b as BuildingRecord
 				if rec.pos.is_equal_approx(pos):
@@ -379,8 +394,13 @@ func _remove_from_grid(rec: BuildingRecord) -> void:
 	for cx in range(cx0, cx1 + 1):
 		for cz in range(cz0, cz1 + 1):
 			var key := Vector2i(cx, cz)
-			var bucket: Array = _grid.get(key, [])
+			var bucket: Variant = _grid.get(key)
+			if bucket == null:
+				continue
 			bucket.erase(rec)
+			# Limpia buckets vacios para no acumular claves muertas en _grid.
+			if (bucket as Array).is_empty():
+				_grid.erase(key)
 
 
 # Selecciona un edificio. Si ya estaba seleccionado, lo deselecciona.
@@ -421,11 +441,10 @@ func _camera_world_position() -> Vector3:
 
 
 func _facade_offset(type: StringName) -> float:
-	# Estos edificios procedurales tienen la puerta en +Z; la casa importada
-	# tiene su puerta en -Z.
-	if type == &"granero" or type == &"granja" or type == &"aserradero" or type == &"almacen":
-		return 0.0
-	return 180.0
+	# Desfase de fachada definido en el propio recurso (la casa importada mira
+	# al contrario que los modelos procedurales).
+	var d := get_def(type)
+	return d.facade_offset if d != null else 0.0
 
 
 func _face_ghost_to_camera(cam_pos: Vector3) -> void:
@@ -472,17 +491,20 @@ func demolish(rec: BuildingRecord) -> void:
 	if d != null:
 		# Reembolso parcial via Economy.refund(): respeta la capacidad por
 		# recurso. Antes se sumaba directo a Economy.amounts y se podia pasar
-		# del tope del almacen.
-		var refund := {}
-		for k in d.cost:
-			refund[k] = d.cost[k] * DEMOLISH_REFUND
-		Economy.refund(refund)
-		# Contadores de capacidad: cada granero/almacen demolido reduce su cap.
+		# del tope del almacen. Los edificios dev se colocaron gratis: si se
+		# reembolsaran, construir y demoler en bucle daria recursos infinitos.
+		if not rec.dev:
+			var refund := {}
+			for k in d.cost:
+				refund[k] = d.cost[k] * DEMOLISH_REFUND
+			Economy.refund(refund)
+		# Contadores de capacidad: cada edificio de almacen demolido reduce su cap.
 		# Produccion: el edificio deja de aportar al "+X.X/s" del HUD.
-		if rec.type == &"granero":
-			Economy.granary_count = maxi(0, Economy.granary_count - 1)
-		elif rec.type == &"almacen":
-			Economy.warehouse_count = maxi(0, Economy.warehouse_count - 1)
+		match d.storage_kind:
+			&"granary":
+				Economy.granary_count = maxi(0, Economy.granary_count - 1)
+			&"warehouse":
+				Economy.warehouse_count = maxi(0, Economy.warehouse_count - 1)
 		# La produccion se registro segun rec.dev (no segun dev_free_build, que
 		# puede haber cambiado despues): si no se usa el mismo criterio, al
 		# demoler se deja produccion fantasma o se resta la que nunca se sumo.
@@ -504,7 +526,11 @@ func demolish(rec: BuildingRecord) -> void:
 	# Avisos finales (el menu ya esta oculto en este punto).
 	if d != null:
 		building_demolished.emit(rec.type, rec.pos)
-		message_requested.emit("%s demolido (reembolso 50%%)" % d.display_name)
+		if rec.dev:
+			message_requested.emit("%s demolido" % d.display_name)
+		else:
+			message_requested.emit("%s demolido (reembolso %d%%)" % [
+				d.display_name, int(round(DEMOLISH_REFUND * 100.0))])
 
 
 func _update_selection_marker() -> void:
@@ -650,6 +676,10 @@ func _on_production_timer(rec: BuildingRecord) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	# Sin camara (camera_path invalido) _ready sale temprano, pero el input
+	# sigue activo y las conversiones pantalla->suelo serian null derefs.
+	if _cam_rig == null:
+		return
 	# Mientras se pintan caminos o se colocan puentes, Buildings no procesa la
 	# colocacion.
 	if Paths.instance != null and Paths.instance.is_placing():
@@ -750,7 +780,7 @@ func _place() -> void:
 		var cls: String = Terrain.terrain_type(ground)
 		var biome_ok := _biome_matches(cls, d.biomes)
 		if not biome_ok:
-			reason = "Solo se puede construir en %s" % d.biomes_text(_BIOME_NAMES)
+			reason = "Solo se puede construir en %s" % d.biomes_text()
 		elif not dev_free_build and not Economy.can_afford(d.cost):
 			reason = "Recursos insuficientes (%s)" % d.cost_text()
 		else:
@@ -762,12 +792,14 @@ func _place() -> void:
 	# Contadores de capacidad de almacenamiento. El granero amplia solo la
 	# comida; el almacen ampla el resto. Cualquier edificio construido
 	# registra su produccion en Economy para que el HUD muestre "+X.X/s".
-	if _pending == &"granero":
-		Economy.granary_count += 1
-		Economy.changed.emit()
-	elif _pending == &"almacen":
-		Economy.warehouse_count += 1
-		Economy.changed.emit()
+	# El tipo de almacen lo declara el propio BuildingDef (storage_kind).
+	match d.storage_kind:
+		&"granary":
+			Economy.granary_count += 1
+			Economy.changed.emit()
+		&"warehouse":
+			Economy.warehouse_count += 1
+			Economy.changed.emit()
 	var base_h := _base_height(ground, d.footprint)
 	# Raiz sin rotar apoyada en el punto de apoyo; el cuerpo gira con el yaw.
 	var node := Node3D.new()
@@ -782,9 +814,9 @@ func _place() -> void:
 	add_child(node)
 	var rec := BuildingRecord.new(_pending, ground, _yaw, node, dev_free_build)
 	_placed.append(rec)
-	# Spatial hash: edificios sin campo se indexan al colocar. Las granjas
-	# se indexan en _confirm_field (tras tener los bounds del campo).
-	if _pending != &"granja":
+	# Spatial hash: edificios sin campo se indexan al colocar. Los edificios con
+	# campo se indexan en _confirm_field (tras tener los bounds del campo).
+	if not d.has_field:
 		_add_to_grid(rec)
 	_attach_production_timer(rec)
 	building_built.emit(_pending, ground)
@@ -792,7 +824,7 @@ func _place() -> void:
 	# pequeno margen. Antes el radio era footprint + 1 y despejaba demasiado.
 	place_clear_requested.emit(ground, d.footprint * 0.75)
 	message_requested.emit("%s construido" % d.display_name)
-	if _pending == &"granja":
+	if d.has_field:
 		# segundo paso: delimitar el campo de cultivo
 		_field_mode = true
 		_field_yaw = _yaw
@@ -906,7 +938,7 @@ func _confirm_field() -> void:
 	# La produccion de la granja depende del tamano del campo (rec.amount), y
 	# el timer real ya la usa. Si se cambio el override, hay que corregir la
 	# tasa registrada en Economy para que el HUD no muestre otra cosa.
-	var def := get_def(&"granja")
+	var def := get_def(_field_farm.type)
 	var rate_before := _registered_rate(_field_farm)
 	_field_farm.amount = clampf(w * d * FIELD_RATE, 0.5, 8.0)
 	var rate_after := _registered_rate(_field_farm)
@@ -929,7 +961,7 @@ func _cancel_field() -> void:
 		cancel_placement()
 		return
 	var was_free := _field_farm.dev
-	var def := get_def(&"granja")
+	var def := get_def(_field_farm.type)
 	# La granja ya emitio building_built al colocarse, asi que pudo registrar
 	# produccion y un grupo de trabajo. Hay que deshacerlo igual que demolish()
 	# y avisar por la senal para que Villagers y Minimap limpien su estado.
@@ -1002,17 +1034,8 @@ func _field_terrain_ok(rect: Rect2) -> bool:
 	return true
 
 
-const _BIOME_NAMES := {
-	0: "llanura",
-	1: "bosque",
-	2: "montaña",
-}
-
-
 func _biome_matches(cls: String, biomes: Array[BuildingDef.Biome]) -> bool:
-	var reverse := {"llanura": 0, "bosque": 1, "montaña": 2}
-	var idx: int = reverse.get(cls, -1)
-	return biomes.has(idx)
+	return biomes.has(BuildingDef.BIOME_BY_NAME.get(cls, -1))
 
 
 # Altura de apoyo del edificio: el punto mas alto del solar para que nunca se

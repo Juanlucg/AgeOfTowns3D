@@ -11,10 +11,9 @@ class_name BuildMenu
 const UIStyle := preload("res://scripts/UIStyle.gd")
 const BuildingTooltip := preload("res://scripts/BuildingTooltip.gd")
 
-const TYPE_KEYS: Array[StringName] = [&"granero", &"granja", &"casa", &"aserradero", &"cantera", &"almacen", &"plaza"]
-
 var _buttons := {}
 var _group := ButtonGroup.new()
+var _type_keys: Array[StringName] = []
 var _buildings: Buildings
 var _paths: Paths
 var _bridges: Bridges
@@ -30,6 +29,9 @@ func _ready() -> void:
 		return
 	_paths = get_node_or_null(paths_path) as Paths
 	_bridges = get_node_or_null(bridges_path) as Bridges
+	# Los tipos y su orden los define Buildings (ordenados por BuildingDef.order
+	# al escanear resources/buildings). Antes habia una lista _type_keys aqui.
+	_type_keys = _buildings.get_ids()
 	layer = 10
 	_buildings.selection_changed.connect(_on_selection_changed)
 
@@ -56,7 +58,7 @@ func _ready() -> void:
 	row.add_theme_constant_override("separation", 8)
 	vbox.add_child(row)
 
-	for id in TYPE_KEYS:
+	for id in _type_keys:
 		var d := _buildings.get_def(id)
 		var b := Button.new()
 		b.toggle_mode = true
@@ -137,7 +139,7 @@ func _on_bridge_pressed() -> void:
 
 func _on_selection_changed(type: StringName) -> void:
 	_syncing = true
-	for t in TYPE_KEYS:
+	for t in _type_keys:
 		(_buttons[t] as Button).button_pressed = (t == type)
 	_syncing = false
 
@@ -165,7 +167,7 @@ func _on_button_unhover() -> void:
 
 
 func _refresh() -> void:
-	for t in TYPE_KEYS:
+	for t in _type_keys:
 		var d := _buildings.get_def(t)
 		var b: Button = _buttons[t]
 		if Economy.can_afford(d.cost):
@@ -175,12 +177,14 @@ func _refresh() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if _buildings == null:
+		return
 	if _buildings.is_placing():
 		return
-	for i in TYPE_KEYS.size():
+	for i in _type_keys.size():
 		if event.is_action_pressed("select_building_%d" % (i + 1)):
 			if _paths != null:
 				_paths.stop_build()
-			_buildings.select(String(TYPE_KEYS[i]))
+			_buildings.select(String(_type_keys[i]))
 			get_viewport().set_input_as_handled()
 			return

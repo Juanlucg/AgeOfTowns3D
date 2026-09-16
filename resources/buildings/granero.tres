@@ -22,3 +22,5 @@ capacity = 300
 capacity_resource = &"comida"
 worker_count = 0
 worker_names = PackedStringArray()
+order = 0
+storage_kind = &"granary"

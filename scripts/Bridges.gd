@@ -41,6 +41,15 @@ static var instance: Bridges = null
 var _cam_rig: CameraController3D
 var _bridges: Array = []       # { id, a, b, width, ya, yb, node, link, manual, stroke_id }
 var _next_id := 0
+## Indice espacial: Vector2i(celda) -> Array[int] indices en _bridges. Sin el,
+## is_bridge/deck_height_at/bridge_at eran O(B) y estan en el camino caliente de
+## cada aldeano cada frame. Se reconstruye al colocar/demoler (accion de usuario,
+## no por frame).
+const GRID_CELL := 8.0
+## Padding de indexado: cubre medio ancho + la tolerancia maxima de consulta
+## (BRIDGE_TOL de Villager/Paths = 0.8) con margen.
+const GRID_PAD := 1.6
+var _grid: Dictionary = {}
 var _selected: Dictionary = {}
 var _marker: MeshInstance3D = null
 var _placing := false
@@ -54,6 +63,39 @@ var _ghost_yaw := 1.0e9   # fuerza el primer reconstruido del fantasma
 func _ready() -> void:
 	instance = self
 	_cam_rig = get_node_or_null(camera_path) as CameraController3D
+	_rebuild_grid()
+
+
+# Limpia la referencia estatica al recargar la escena: sin esto, `instance`
+# quedaba apuntando a un objeto liberado hasta el _ready de la nueva instancia.
+func _exit_tree() -> void:
+	if instance == self:
+		instance = null
+
+
+# Reconstruye el indice espacial desde _bridges. Barato: pocos puentes y solo
+# al colocar/demoler.
+func _rebuild_grid() -> void:
+	_grid.clear()
+	for i in _bridges.size():
+		var br: Dictionary = _bridges[i]
+		var a: Vector2 = br["a"]
+		var b: Vector2 = br["b"]
+		var pad: float = br["width"] * 0.5 + GRID_PAD
+		var x0 := int(floor((minf(a.x, b.x) - pad) / GRID_CELL))
+		var x1 := int(floor((maxf(a.x, b.x) + pad) / GRID_CELL))
+		var y0 := int(floor((minf(a.y, b.y) - pad) / GRID_CELL))
+		var y1 := int(floor((maxf(a.y, b.y) + pad) / GRID_CELL))
+		for gx in range(x0, x1 + 1):
+			for gy in range(y0, y1 + 1):
+				var key := Vector2i(gx, gy)
+				if not _grid.has(key):
+					_grid[key] = []
+				(_grid[key] as Array).append(i)
+
+
+static func _cell(p: Vector2) -> Vector2i:
+	return Vector2i(int(floor(p.x / GRID_CELL)), int(floor(p.y / GRID_CELL)))
 
 
 # --- API ---
@@ -72,7 +114,11 @@ func has_crossing(a: Vector2, b: Vector2) -> bool:
 
 ## Distancia (con tolerancia) al eje del puente mas cercano.
 func is_bridge(p: Vector2, tol := 0.0) -> bool:
-	for br in _bridges:
+	var bucket: Variant = _grid.get(_cell(p))
+	if bucket == null:
+		return false
+	for i in bucket:
+		var br: Dictionary = _bridges[i]
 		var hw: float = br["width"] * 0.5 + tol
 		if _dist_sq(p, br["a"], br["b"]) <= hw * hw:
 			return true
@@ -83,7 +129,11 @@ func is_bridge(p: Vector2, tol := 0.0) -> bool:
 ## ningun puente.
 func deck_height_at(p: Vector2, tol := 0.0) -> float:
 	var h := -1.0e9
-	for br in _bridges:
+	var bucket: Variant = _grid.get(_cell(p))
+	if bucket == null:
+		return h
+	for i in bucket:
+		var br: Dictionary = _bridges[i]
 		var hw: float = br["width"] * 0.5 + tol
 		if _dist_sq(p, br["a"], br["b"]) <= hw * hw:
 			var t := _project_t(p, br["a"], br["b"])
@@ -97,6 +147,35 @@ static func _project_t(p: Vector2, a: Vector2, b: Vector2) -> float:
 	if denom < 0.000001:
 		return 0.0
 	return clampf((p - a).dot(ab) / denom, 0.0, 1.0)
+
+
+## Punto del eje del puente `br` mas cercano a `pos` (en el plano XZ).
+static func closest_point_on_bridge(br: Dictionary, pos: Vector2) -> Vector2:
+	var a: Vector2 = br["a"]
+	var b: Vector2 = br["b"]
+	return a.lerp(b, _project_t(pos, a, b))
+
+
+## Puente cuyo eje esta a menos de `max_dist` de `pos`, el mas cercano, o {}.
+## Lo usan los aldeanos para saber por donde cruzar.
+func nearest_bridge(pos: Vector2, max_dist: float) -> Dictionary:
+	var best := {}
+	var best_d := max_dist * max_dist
+	var r := int(ceil(max_dist / GRID_CELL))
+	var cx := int(floor(pos.x / GRID_CELL))
+	var cy := int(floor(pos.y / GRID_CELL))
+	for gx in range(cx - r, cx + r + 1):
+		for gy in range(cy - r, cy + r + 1):
+			var bucket: Variant = _grid.get(Vector2i(gx, gy))
+			if bucket == null:
+				continue
+			for i in bucket:
+				var br: Dictionary = _bridges[i]
+				var d2 := _dist_sq(pos, br["a"], br["b"])
+				if d2 < best_d:
+					best_d = d2
+					best = br
+	return best
 
 
 static func _dist_sq(p: Vector2, a: Vector2, b: Vector2) -> float:
@@ -147,6 +226,7 @@ func add_bridge(a: Vector2, b: Vector2, width: float, charge := true,
 	}
 	_next_id += 1
 	_bridges.append(br)
+	_rebuild_grid()
 	bridges_changed.emit()
 	return br
 
@@ -165,7 +245,11 @@ func get_selected() -> Dictionary:
 func bridge_at(pos: Vector2, tol := 0.0) -> Dictionary:
 	var best := {}
 	var best_d := 1.0e18
-	for br in _bridges:
+	var bucket: Variant = _grid.get(_cell(pos))
+	if bucket == null:
+		return best
+	for i in bucket:
+		var br: Dictionary = _bridges[i]
 		var hw: float = br["width"] * 0.5 + tol
 		var d2 := _dist_sq(pos, br["a"], br["b"])
 		if d2 <= hw * hw and d2 < best_d:
@@ -230,6 +314,7 @@ func remove_bridge(br: Dictionary) -> void:
 	else:
 		_remove_marker()
 	_bridges.remove_at(idx)
+	_rebuild_grid()
 	if br.get("node") != null and is_instance_valid(br["node"]):
 		br["node"].queue_free()
 	if br.get("link") != null and is_instance_valid(br["link"]):

@@ -25,3 +25,4 @@ worker_names = PackedStringArray()
 happiness_bonus = 2.0
 attracts_growth = true
 gathering_point = true
+order = 6

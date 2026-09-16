@@ -24,6 +24,9 @@ var _updating := false
 
 
 func _ready() -> void:
+	# Debe seguir respondiendo con el arbol pausado: su funcion es controlar
+	# hora y pausa. Sin esto, al pausar desde el HUD sus controles se bloquean.
+	process_mode = Node.PROCESS_MODE_ALWAYS
 	layer = 11
 	_day = get_node_or_null(day_night_path) as DayNightCycle
 	_buildings = get_node_or_null(buildings_path) as Buildings
@@ -118,8 +121,9 @@ func _ready() -> void:
 
 	_season_opt = OptionButton.new()
 	_season_opt.add_theme_font_size_override("font_size", 13)
-	for i in _day.SEASONS.size():
-		_season_opt.add_item(_day.SEASONS[i], i)
+	if _day != null:
+		for i in _day.SEASONS.size():
+			_season_opt.add_item(_day.SEASONS[i], i)
 	_season_opt.item_selected.connect(_on_season_selected)
 	body.add_child(_season_opt)
 
@@ -168,7 +172,7 @@ func _ready() -> void:
 
 
 func _on_time_changed(day_value: int, _season: int, hour: float, _weather: String) -> void:
-	if _updating:
+	if _updating or _day == null:
 		return
 	# _day es la referencia al DayNightCycle de instancia; los parametros
 	# del callback usan nombres distintos para no sombrearlo.
@@ -185,7 +189,7 @@ func _sync_from_state() -> void:
 	_updating = true
 	_hour_slider.value = _day.get_hour()
 	_hour_label.text = _fmt_hour(_day.get_hour())
-	_pause_btn.button_pressed = _day.dev_paused
+	_pause_btn.set_pressed_no_signal(_day.dev_paused)
 	_pause_btn.text = "Reanudar" if _day.dev_paused else "Pausar"
 	_season_opt.selected = _day.get_season()
 	if _day._dev_weather_override == "":
@@ -197,7 +201,7 @@ func _sync_from_state() -> void:
 	else:
 		_weather_opt.selected = 3
 	if _buildings != null:
-		_dev_check.button_pressed = _buildings.dev_free_build
+		_dev_check.set_pressed_no_signal(_buildings.dev_free_build)
 	_updating = false
 
 

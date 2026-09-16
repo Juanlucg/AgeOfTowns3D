@@ -153,6 +153,8 @@ func _ready() -> void:
 
 
 func show_message(text: String) -> void:
+	if _msg_label == null or _msg_timer == null:
+		return
 	_msg_label.text = text
 	_msg_label.visible = true
 	_msg_timer.start()
@@ -184,7 +186,7 @@ func _label(font_size: int, bold := false) -> Label:
 
 
 func _on_time_changed(day: int, season: int, hour: float, weather_name: String) -> void:
-	_season_color.color = SEASON_COLORS[season]
+	_season_color.color = SEASON_COLORS[clampi(season, 0, SEASON_COLORS.size() - 1)]
 	_season_label.text = _day.get_season_name()
 	_day_label.text = "Día %d" % day
 	_phase_label.text = _phase(hour)
@@ -250,7 +252,7 @@ func _cycle_speed() -> void:
 
 func _update_speed_controls() -> void:
 	if _pause_button != null:
-		_pause_button.button_pressed = get_tree().paused
+		_pause_button.set_pressed_no_signal(get_tree().paused)
 		_pause_button.text = "Reanudar" if get_tree().paused else "Pausar"
 	if _speed_button != null:
 		_speed_button.text = "%.0fx" % GAME_SPEEDS[_speed_index]

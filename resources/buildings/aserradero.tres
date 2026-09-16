@@ -22,3 +22,4 @@ capacity_resource = &""
 worker_count = 2
 worker_names = PackedStringArray("Leñador", "Carpintero")
 work_radius = 8.0
+order = 3

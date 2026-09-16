@@ -99,7 +99,11 @@ func _draw() -> void:
 
 
 func _on_building(type: StringName, pos: Vector2) -> void:
+	if _buildings == null:
+		return
 	var d := _buildings.get_def(type)
+	if d == null:
+		return
 	_buildings_on_map.append({"pos": pos, "color": d.color})
 	queue_redraw()
 
@@ -108,6 +112,7 @@ func _on_building_demolished(_type: StringName, pos: Vector2) -> void:
 	for i in range(_buildings_on_map.size() - 1, -1, -1):
 		if _buildings_on_map[i].pos.distance_to(pos) < 0.5:
 			_buildings_on_map.remove_at(i)
+			queue_redraw()
 			return
 
 
@@ -115,6 +120,8 @@ func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton:
 		var btn := event as InputEventMouseButton
 		if btn.pressed and btn.button_index == MOUSE_BUTTON_LEFT and _minimap_rect().has_point(btn.position):
+			if _cam_rig == null:
+				return
 			var p := btn.position - _minimap_rect().position
 			var world := Vector2(p.x / SIZE * Terrain.WORLD_SIZE, p.y / SIZE * Terrain.WORLD_SIZE)
 			_cam_rig.move_to(world)

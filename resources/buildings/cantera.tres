@@ -22,3 +22,4 @@ capacity = 0
 capacity_resource = &""
 worker_count = 2
 worker_names = PackedStringArray("Cantero", "Picapedrero")
+order = 4

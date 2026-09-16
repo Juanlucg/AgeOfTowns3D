@@ -85,6 +85,13 @@ func _ready() -> void:
 	set_process(false)
 
 
+# Limpia la referencia estatica al recargar la escena: sin esto, `instance`
+# quedaba apuntando a un objeto liberado hasta el _ready de la nueva instancia.
+func _exit_tree() -> void:
+	if instance == self:
+		instance = null
+
+
 func _bind_terrain_material() -> void:
 	var terrain := get_node_or_null(terrain_path) as TerrainMesh
 	if terrain == null and get_parent() != null:
@@ -126,9 +133,14 @@ func is_placing() -> bool:
 
 func is_path(p: Vector2) -> bool:
 	var hw := path_width * 0.5
-	for s in _strokes_near(p):
-		if _near(s, p, hw):
-			return true
+	# Itera el bucket del indice espacial directamente: antes _strokes_near()
+	# creaba un Array nuevo en cada llamada, y esto corre por aldeano y frame.
+	var bucket: Variant = _grid.get(Vector2i(
+		int(floor(p.x / GRID_CELL)), int(floor(p.y / GRID_CELL))))
+	if bucket != null:
+		for i in bucket:
+			if _near(_strokes[i], p, hw):
+				return true
 	if _current.size() >= 2:
 		return _near_points(_current, p, hw)
 	return false
@@ -230,7 +242,10 @@ func nearest_stroke(pos: Vector2, max_dist: float) -> Dictionary:
 	var seen := {}
 	for gx in range(cx - r, cx + r + 1):
 		for gy in range(cy - r, cy + r + 1):
-			for i in Array(_grid.get(Vector2i(gx, gy), [])):
+			var bucket: Variant = _grid.get(Vector2i(gx, gy))
+			if bucket == null:
+				continue
+			for i in bucket:
 				if seen.has(i):
 					continue
 				seen[i] = true
@@ -299,7 +314,10 @@ func plan_via_nearest(from: Vector2, dest: Vector2, max_dist: float,
 	var seen := {}
 	for gx in range(cx - r, cx + r + 1):
 		for gy in range(cy - r, cy + r + 1):
-			for i in Array(_grid.get(Vector2i(gx, gy), [])):
+			var bucket: Variant = _grid.get(Vector2i(gx, gy))
+			if bucket == null:
+				continue
+			for i in bucket:
 				if seen.has(i):
 					continue
 				seen[i] = true
@@ -335,14 +353,6 @@ func _rebuild_grid() -> void:
 				(_grid[key] as Array).append(i)
 
 
-# Caminos cuyo `bounds` solapa la celda de `pos` (ya incluye la tolerancia de
-# seleccion al indexar, asi que basta con la celda que contiene el punto).
-func _strokes_near(pos: Vector2) -> Array:
-	var key := Vector2i(int(floor(pos.x / GRID_CELL)), int(floor(pos.y / GRID_CELL)))
-	var out: Array = []
-	for i in Array(_grid.get(key, [])):
-		out.append(_strokes[i])
-	return out
 
 
 # --- Geometria de polilineas ---

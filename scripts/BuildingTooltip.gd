@@ -3,8 +3,6 @@ class_name BuildingTooltip
 ## Popup que muestra el detalle de un [BuildingDef]: nombre, coste,
 ## produccion, biomas validos. Se posiciona cerca del raton al hover.
 
-const _BIOME_NAMES := {0: "llanura", 1: "bosque", 2: "montaña"}
-
 
 func show_for(def: BuildingDef, at: Vector2) -> void:
 	_clear()
@@ -23,11 +21,7 @@ func show_for(def: BuildingDef, at: Vector2) -> void:
 		_add_row(vbox, "Produce", "+%s %s cada %ss" % [amt, String(def.prod_resource), _format_amount(def.prod_interval)])
 	if def.hint != "":
 		_add_row(vbox, "", def.hint)
-	var biomes_parts: Array = []
-	for b in def.biomes:
-		biomes_parts.append(_BIOME_NAMES.get(b, str(b)))
-	var biomes_str := ", ".join(biomes_parts)
-	_add_row(vbox, "Biomas", biomes_str)
+	_add_row(vbox, "Biomas", def.biomes_text())
 	position = at
 	visible = true
 

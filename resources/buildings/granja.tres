@@ -21,3 +21,5 @@ capacity = 0
 capacity_resource = &""
 worker_count = 3
 worker_names = PackedStringArray("Campesino", "Jornalero", "Granjero")
+order = 1
+has_field = true

@@ -8,6 +8,19 @@ class_name BuildingDef
 
 enum Biome { LLANURA = 0, BOSQUE = 1, MONTANA = 2 }
 
+## Fuente unica de los nombres de bioma (antes estaba duplicado en Buildings,
+## BuildingTooltip y BuildingInfoMenu).
+const BIOME_NAMES := {
+	0: "llanura",
+	1: "bosque",
+	2: "montaña",
+}
+const BIOME_BY_NAME := {
+	"llanura": 0,
+	"bosque": 1,
+	"montaña": 2,
+}
+
 @export var id: StringName = &""
 @export var display_name: String = ""
 @export var description: String = ""              # texto largo en el menu contextual
@@ -35,6 +48,17 @@ enum Biome { LLANURA = 0, BOSQUE = 1, MONTANA = 2 }
 # Radio de la zona de actuacion (aserradero). 0 = sin zona. Dos edificios con
 # zona no pueden solaparla.
 @export var work_radius: float = 0.0
+# Orden en el menu de construccion (menor primero). Determina tambien que
+# atajo 1-7 le corresponde.
+@export var order: int = 0
+# Desfase en grados de la fachada segun el modelo. Los procedurales tienen la
+# puerta en -Z (0); la casa importada al contrario (180).
+@export var facade_offset: float = 0.0
+# Almacen que amplia al construirse: "" (ninguno), "granary" (comida) o
+# "warehouse" (resto). Antes se decidia con if type == &"granero"/&"almacen".
+@export var storage_kind: StringName = &""
+# Edificio de dos pasos: tras colocarlo se delimita un campo de cultivo.
+@export var has_field: bool = false
 
 
 # Helpers que Buildings.gd usaba implicitamente.
@@ -49,8 +73,8 @@ func cost_text() -> String:
 	return ", ".join(parts)
 
 
-func biomes_text(biome_names: Dictionary) -> String:
+func biomes_text() -> String:
 	var out := []
 	for b in biomes:
-		out.append(biome_names.get(b, str(b)))
+		out.append(BIOME_NAMES.get(b, str(b)))
 	return ", ".join(out)

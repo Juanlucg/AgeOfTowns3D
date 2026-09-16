@@ -23,3 +23,5 @@ capacity_resource = &""
 worker_count = 0
 worker_names = PackedStringArray()
 housing_capacity = 4
+order = 2
+facade_offset = 180.0

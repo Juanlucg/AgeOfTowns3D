@@ -11,8 +11,6 @@ class_name BuildingInfoMenu
 ## Layout: header (icono + nombre), descripcion, capacidad, trabajadores,
 ## storage global y boton Demoler full-width abajo.
 
-const _BIOME_NAMES := {0: "llanura", 1: "bosque", 2: "montaña"}
-
 var _content: VBoxContainer = null
 var _catcher: ColorRect = null
 var _record: BuildingRecord = null
