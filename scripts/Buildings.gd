@@ -448,6 +448,15 @@ func deselect() -> void:
 	building_focus_changed.emit(null, Vector2.ZERO)
 
 
+# Quita la seleccion de edificio, puente y camino.
+func _deselect_all() -> void:
+	deselect()
+	if Bridges.instance != null:
+		Bridges.instance.deselect_bridge()
+	if Paths.instance != null:
+		Paths.instance.deselect_stroke()
+
+
 # Demuele el edificio seleccionado. Refund parcial segun DEMOLISH_REFUND.
 func demolish_selected() -> void:
 	if _selected == null:
@@ -665,15 +674,24 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif _pending != &"":
 			cancel_placement()
 		else:
-			deselect()
+			_deselect_all()
 		get_viewport().set_input_as_handled()
 		return
-	# Demoler: tecla Delete/Backspace con edificio seleccionado.
+	# Demoler: Delete/Backspace. Prioridad: puente > camino > edificio.
 	if event is InputEventKey and event.pressed and not event.echo:
-		if (event.keycode == KEY_DELETE or event.keycode == KEY_BACKSPACE) and _selected != null:
-			demolish_selected()
-			get_viewport().set_input_as_handled()
-			return
+		if event.keycode == KEY_DELETE or event.keycode == KEY_BACKSPACE:
+			if Bridges.instance != null and Bridges.instance.has_selection():
+				Bridges.instance.demolish_selected()
+				get_viewport().set_input_as_handled()
+				return
+			if Paths.instance != null and Paths.instance.has_selection():
+				Paths.instance.demolish_selected_stroke()
+				get_viewport().set_input_as_handled()
+				return
+			if _selected != null:
+				demolish_selected()
+				get_viewport().set_input_as_handled()
+				return
 	if event is InputEventMouseButton:
 		var btn := event as InputEventMouseButton
 		if _field_mode and btn.pressed:
@@ -691,9 +709,26 @@ func _unhandled_input(event: InputEvent) -> void:
 				_place()
 				get_viewport().set_input_as_handled()
 			return
-		# Sin colocar: clic izq = seleccionar edificio bajo el cursor; der = deseleccionar.
+		# Sin colocar: clic izq selecciona (prioridad puente > camino >
+		# edificio); clic der deselecciona todo.
 		if btn.pressed and btn.button_index == MOUSE_BUTTON_LEFT:
 			var ground: Vector2 = _cam_rig.screen_to_ground(btn.position)
+			if Bridges.instance != null and Bridges.instance.select_at(ground):
+				if Paths.instance != null:
+					Paths.instance.deselect_stroke()
+				deselect()
+				get_viewport().set_input_as_handled()
+				return
+			if Paths.instance != null and Paths.instance.select_at(ground):
+				if Bridges.instance != null:
+					Bridges.instance.deselect_bridge()
+				deselect()
+				get_viewport().set_input_as_handled()
+				return
+			if Bridges.instance != null:
+				Bridges.instance.deselect_bridge()
+			if Paths.instance != null:
+				Paths.instance.deselect_stroke()
 			var hit := building_at(ground)
 			if hit != null:
 				toggle_select(hit)
@@ -701,10 +736,9 @@ func _unhandled_input(event: InputEvent) -> void:
 				deselect()
 			get_viewport().set_input_as_handled()
 			return
-		if btn.pressed and btn.button_index == MOUSE_BUTTON_RIGHT and _selected != null:
-			# Clic derecho = deseleccionar (y asi no choca con la orbita de
-			# camara). Demoler es con Delete, como indica el propio menu.
-			deselect()
+		if btn.pressed and btn.button_index == MOUSE_BUTTON_RIGHT:
+			# Clic derecho = deseleccionar todo. Demoler es con Delete.
+			_deselect_all()
 			get_viewport().set_input_as_handled()
 
 

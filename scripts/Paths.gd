@@ -14,6 +14,10 @@ signal message_requested(text: String)
 ## Pide retirar vegetacion/rocas al paso del camino (lo consumen Vegetation y
 ## Rocks via Main), como hace la colocacion de edificios.
 signal path_clear_requested(pos: Vector2, radius: float)
+## Emitida al seleccionar/deseleccionar un camino (vacio = nada).
+signal stroke_selection_changed(stroke: Dictionary)
+## Emitida al eliminar un camino.
+signal stroke_demolished(id: int)
 
 @export var camera_path: NodePath
 @export var terrain_path: NodePath
@@ -24,6 +28,11 @@ const SPEED_MULT := 1.6
 const MIN_STEP := 0.25          # separacion minima entre puntos del trazo (m)
 const AUTO_MARGIN := 0.25       # el puente automatico se apoya un poco en la orilla
 const CLEAR_R := 0.8            # radio de limpieza de vegetacion/rocas del camino
+## Longitud maxima de un tramo de camino: un trazo mas largo se parte en varios
+## tramos para poder borrar por partes sin perder todo el camino.
+const MAX_STROKE_LEN := 10.0
+## Longitud minima de un tramo (evita trozos minusculos en los cruces).
+const MIN_PIECE := 1.0
 const MASK_SIZE := 2048         # resolucion de la mascara (px sobre el mapa)
 const MASK_UPDATE_INTERVAL := 0.1
 const PATH_COLOR := Color(0.62, 0.54, 0.42)
@@ -33,7 +42,10 @@ const GHOST_COLOR := Color(0.92, 0.84, 0.55, 0.35)
 static var instance: Paths = null
 
 var _cam_rig: CameraController3D
-var _strokes: Array = []        # Array[ { pts: PackedVector2Array, bounds: Rect2 } ]
+var _strokes: Array = []        # Array[ { id, pts: PackedVector2Array, bounds: Rect2 } ]
+var _next_stroke_id := 0
+var _selected_stroke: Dictionary = {}
+var _stroke_marker: MeshInstance3D = null
 var _current := PackedVector2Array()
 var _placing := false
 var _drawing := false
@@ -114,6 +126,156 @@ func speed_multiplier_at(p: Vector2) -> float:
 
 func count() -> int:
 	return _strokes.size() + (1 if _current.size() >= 2 else 0)
+
+
+# --- Seleccion y demolicion de caminos ---
+
+func has_selection() -> bool:
+	return not _selected_stroke.is_empty()
+
+
+func get_selected_stroke() -> Dictionary:
+	return _selected_stroke
+
+
+## Camino MAS CERCANO a `pos` dentro del margen (ancho del camino +
+## tolerancia), o {}. No depende del orden interno de `_strokes`.
+##
+## Desempate: si la distancia es practicamente igual (cruce exacto), gana el
+## camino con el ID mayor, es decir, el creado mas recientemente.
+func stroke_at(pos: Vector2) -> Dictionary:
+	var hw := path_width * 0.5 + 0.3
+	var hw2 := hw * hw
+	var best: Dictionary = {}
+	var best_d := 1.0e18
+	for s in _strokes:
+		var b: Rect2 = s["bounds"]
+		if pos.x < b.position.x - hw or pos.x > b.end.x + hw \
+				or pos.y < b.position.y - hw or pos.y > b.end.y + hw:
+			continue
+		var d2 := distance_sq_to_stroke(s["pts"], pos)
+		if d2 > hw2:
+			continue
+		if best.is_empty() or d2 < best_d - 0.0001 \
+				or (absf(d2 - best_d) <= 0.0001 and int(s["id"]) > int(best["id"])):
+			best_d = d2
+			best = s
+	return best
+
+
+## Distancia cuadrada minima de `pos` a la polilinea `pts`.
+static func distance_sq_to_stroke(pts: PackedVector2Array, pos: Vector2) -> float:
+	var best := 1.0e18
+	for i in range(pts.size() - 1):
+		best = minf(best, _dist_sq_to_segment(pos, pts[i], pts[i + 1]))
+	return best
+
+
+## Selecciona el camino bajo `pos`. Devuelve true si habia uno.
+func select_at(pos: Vector2) -> bool:
+	var s := stroke_at(pos)
+	if s.is_empty():
+		return false
+	select_stroke(s)
+	return true
+
+
+func select_stroke(s: Dictionary) -> void:
+	if not _selected_stroke.is_empty() and int(_selected_stroke["id"]) == int(s["id"]):
+		return
+	deselect_stroke()
+	_selected_stroke = s
+	_add_stroke_marker(s)
+	stroke_selection_changed.emit(_selected_stroke)
+
+
+func deselect_stroke() -> void:
+	if _selected_stroke.is_empty():
+		return
+	_remove_stroke_marker()
+	_selected_stroke = {}
+	stroke_selection_changed.emit({})
+
+
+func demolish_selected_stroke() -> void:
+	if not _selected_stroke.is_empty():
+		demolish_stroke(int(_selected_stroke["id"]))
+
+
+## Elimina un camino y, de paso, sus puentes automaticos.
+func demolish_stroke(id: int) -> bool:
+	var idx := -1
+	for i in _strokes.size():
+		if int((_strokes[i] as Dictionary)["id"]) == id:
+			idx = i
+			break
+	if idx == -1:
+		return false
+	if not _selected_stroke.is_empty() and int(_selected_stroke["id"]) == id:
+		deselect_stroke()
+	if Bridges.instance != null:
+		for br in Bridges.instance.bridges_for_stroke(id):
+			Bridges.instance.remove_bridge(br)
+	_strokes.remove_at(idx)
+	_rebuild_mask_from_strokes()
+	_flush_mask()
+	stroke_demolished.emit(id)
+	return true
+
+
+# Marca todo el camino: una cinta resaltada que sigue su trazado (no un punto).
+func _add_stroke_marker(s: Dictionary) -> void:
+	_remove_stroke_marker()
+	var pts: PackedVector2Array = s["pts"]
+	if pts.size() < 2:
+		return
+	var hw := path_width * 0.5 + 0.22
+	var n := pts.size()
+	var lefts: Array[Vector3] = []
+	var rights: Array[Vector3] = []
+	for i in range(n):
+		var dir: Vector2
+		if i == 0:
+			dir = (pts[1] - pts[0]).normalized()
+		elif i == n - 1:
+			dir = (pts[i] - pts[i - 1]).normalized()
+		else:
+			dir = (pts[i + 1] - pts[i - 1]).normalized()
+		if dir == Vector2.ZERO:
+			dir = Vector2.RIGHT
+		var nrm := Vector2(-dir.y, dir.x)
+		lefts.append(_highlight_point(pts[i] + nrm * hw))
+		rights.append(_highlight_point(pts[i] - nrm * hw))
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	for i in range(n - 1):
+		st.add_vertex(lefts[i])
+		st.add_vertex(rights[i])
+		st.add_vertex(lefts[i + 1])
+		st.add_vertex(rights[i])
+		st.add_vertex(rights[i + 1])
+		st.add_vertex(lefts[i + 1])
+	st.generate_normals()
+	var m := MeshInstance3D.new()
+	m.mesh = st.commit()
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(1.0, 0.85, 0.2, 0.35)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	m.material_override = mat
+	add_child(m)
+	_stroke_marker = m
+
+
+static func _highlight_point(p: Vector2) -> Vector3:
+	return Vector3(p.x, Terrain.height_at(p) + 0.05, p.y)
+
+
+func _remove_stroke_marker() -> void:
+	if _stroke_marker != null and is_instance_valid(_stroke_marker):
+		_stroke_marker.queue_free()
+	_stroke_marker = null
 
 
 func _near(s: Dictionary, p: Vector2, hw: float) -> bool:
@@ -255,29 +417,60 @@ func _clear_at(p: Vector2) -> void:
 
 func _finish_stroke() -> void:
 	if _current.size() >= 2:
-		_strokes.append({"pts": _current, "bounds": _bounds(_current)})
-		var err := _make_auto_bridges(_current)
-		if err != "":
-			# No se pudo cruzar (sin madera o agua no navegable): se revierte el
-			# trazo para no dejar un camino que cruce el agua.
-			_strokes.pop_back()
+		var crossings := _find_crossings(_current)
+		var err := _validate_crossings(crossings)
+		if err == "":
+			var stroke := {"id": _next_stroke_id, "pts": _current, "bounds": _bounds(_current)}
+			_next_stroke_id += 1
+			_strokes.append(stroke)
+			for c in crossings:
+				Bridges.instance.add_bridge(
+					c["a"], c["b"], path_width + 0.4, true, false, int(stroke["id"]))
+			# Re-trocea TODOS los caminos por cruces (sin importar el orden en
+			# que se dibujaron) y por longitud.
+			_resegment_all()
+		else:
+			# No se pudo cruzar: no queda camino atravesando el agua.
 			_rebuild_mask_from_strokes()
 			message_requested.emit(err)
 	_current = PackedVector2Array()
-	# Al cerrar el trazo se vuelca la mascara ya, para que el camino aparezca
-	# de inmediato (aunque se salga del modo construccion en el mismo frame).
 	_flush_mask()
+
+
+# Re-trocea todos los caminos por cruces (para que un tramo acabe en cada
+# cruce) y por longitud, y reasocia los puentes automaticos a su tramo.
+func _resegment_all() -> void:
+	deselect_stroke()
+	var polys: Array = []
+	for s in _strokes:
+		polys.append({"pts": s["pts"], "bounds": s["bounds"]})
+	var new_polys: Array = []
+	for i in range(polys.size()):
+		for seg in _cut_at_intersections(polys[i]["pts"], polys, i):
+			new_polys.append_array(_cut_by_length(seg))
+	_strokes.clear()
+	for p in new_polys:
+		var stroke := {"id": _next_stroke_id, "pts": p, "bounds": _bounds(p)}
+		_next_stroke_id += 1
+		_strokes.append(stroke)
+	if Bridges.instance != null:
+		for br in Bridges.instance.bridges_auto():
+			var mid: Vector2 = ((br["a"] as Vector2) + (br["b"] as Vector2)) * 0.5
+			var s := stroke_at(mid)
+			if not s.is_empty():
+				br["stroke_id"] = int(s["id"])
+	_rebuild_mask_from_strokes()
 
 
 # Crea puentes en los tramos del trazo que cruzan agua (con tierra a los dos
 # lados). [Bridges] cobra la madera y crea el [NavigationLink3D]; devuelve false
 # si no hay madera (para revertir el trazo).
-func _make_auto_bridges(pts: PackedVector2Array) -> String:
-	if Bridges.instance == null or pts.size() < 2:
-		return ""
-	# 1) Buscar los cruces escaneando los segmentos COMPLETOS: asi se detecta un
-	#    rio aunque los dos puntos muestreados esten en tierra.
+# Cruces de agua de una polilinea, escaneando los segmentos COMPLETOS: asi se
+# detecta un rio aunque los dos puntos muestreados esten en tierra.
+func _find_crossings(pts: PackedVector2Array) -> Array:
 	var crossings: Array = []
+	if Bridges.instance == null or pts.size() < 2:
+		return crossings
 	var inside := false
 	var entry := Vector2.ZERO
 	for i in range(1, pts.size()):
@@ -304,8 +497,11 @@ func _make_auto_bridges(pts: PackedVector2Array) -> String:
 					})
 			a = b
 			a_w = b_w
-	# 2) Solo se permiten puentes sobre rios; y el coste total (sin contar
-	#    cruces que ya tengan puente) se comprueba antes de crear nada.
+	return crossings
+
+
+# Valida TODOS los cruces antes de crear nada: solo rios y madera suficiente.
+func _validate_crossings(crossings: Array) -> String:
 	var total := 0
 	for c in crossings:
 		var ca: Vector2 = c["a"]
@@ -317,10 +513,109 @@ func _make_auto_bridges(pts: PackedVector2Array) -> String:
 		total += Bridges.cost_for(ca.distance_to(cb))
 	if total > 0 and not Economy.can_afford({"madera": float(total)}):
 		return "Camino cancelado: falta madera para el puente"
-	# 3) Crear los puentes (add_bridge ignora los cruces duplicados).
-	for c in crossings:
-		Bridges.instance.add_bridge(c["a"], c["b"], path_width + 0.4)
 	return ""
+
+
+# --- Troceado en tramos ---
+
+# Corta el trazo donde cruza transversalmente CUALQUIER OTRO camino.
+func _cut_at_intersections(pts: PackedVector2Array, polys: Array, self_idx: int) -> Array:
+	var out: Array = []
+	var n := pts.size()
+	if n < 2:
+		return out
+	var start := 0
+	for i in range(1, n):
+		if not _hits_other_path(pts[i - 1], pts[i], polys, self_idx):
+			continue
+		if pts[i - 1].distance_to(pts[start]) >= MIN_PIECE:
+			out.append(_sub(pts, start, i - 1))
+			start = i - 1
+	if start < n - 1:
+		out.append(_sub(pts, start, n - 1))
+	if out.is_empty():
+		out.append(pts)
+	return out
+
+
+func _cut_by_length(pts: PackedVector2Array) -> Array:
+	var chunks: Array = []
+	var n := pts.size()
+	if n < 2:
+		return chunks
+	var cum := PackedFloat32Array()
+	cum.resize(n)
+	for i in range(1, n):
+		cum[i] = cum[i - 1] + pts[i - 1].distance_to(pts[i])
+	var start := 0
+	while start < n - 1:
+		var target: float = cum[start] + MAX_STROKE_LEN
+		var idx := start + 1
+		while idx < n - 1 and cum[idx] < target:
+			idx += 1
+		if idx >= n - 1:
+			chunks.append(_sub(pts, start, n - 1))
+			break
+		var cut := _safe_cut(pts, idx)
+		if cut <= start + 1:
+			chunks.append(_sub(pts, start, n - 1))
+			break
+		chunks.append(_sub(pts, start, cut))
+		start = cut
+	return chunks
+
+
+# True si el segmento a-b cruza transversalmente algun camino de `polys`
+# (excepto el de indice `skip`).
+func _hits_other_path(a: Vector2, b: Vector2, polys: Array, skip: int) -> bool:
+	for k in range(polys.size()):
+		if k == skip:
+			continue
+		var d: Dictionary = polys[k]
+		var bb: Rect2 = d["bounds"]
+		if maxf(a.x, b.x) < bb.position.x or minf(a.x, b.x) > bb.end.x \
+				or maxf(a.y, b.y) < bb.position.y or minf(a.y, b.y) > bb.end.y:
+			continue
+		var sp: PackedVector2Array = d["pts"]
+		for j in range(sp.size() - 1):
+			if _segments_cross(a, b, sp[j], sp[j + 1]):
+				return true
+	return false
+
+
+static func _segments_cross(p1: Vector2, p2: Vector2, p3: Vector2, p4: Vector2) -> bool:
+	var d1 := _cross(p3, p4, p1)
+	var d2 := _cross(p3, p4, p2)
+	var d3 := _cross(p1, p2, p3)
+	var d4 := _cross(p1, p2, p4)
+	return ((d1 > 0.0 and d2 < 0.0) or (d1 < 0.0 and d2 > 0.0)) \
+		and ((d3 > 0.0 and d4 < 0.0) or (d3 < 0.0 and d4 > 0.0))
+
+
+static func _cross(a: Vector2, b: Vector2, p: Vector2) -> float:
+	return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)
+
+
+static func _sub(pts: PackedVector2Array, a: int, b: int) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	for i in range(a, b + 1):
+		if i >= 0 and i < pts.size():
+			out.append(pts[i])
+	return out
+
+
+# Indice de corte mas cercano a `idx` con tierra en el punto y en sus vecinos.
+func _safe_cut(pts: PackedVector2Array, idx: int) -> int:
+	var n := pts.size()
+	for off in range(0, n):
+		for cand in [idx - off, idx + off]:
+			if cand <= 0 or cand >= n - 1:
+				continue
+			if not Terrain.is_water(pts[cand - 1]) \
+					and not Terrain.is_water(pts[cand]) \
+					and not Terrain.is_water(pts[cand + 1]):
+				return cand
+	return -1
 
 
 # Rehace la mascara del camino desde los trazos guardados (para revertir el

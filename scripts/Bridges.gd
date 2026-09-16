@@ -14,6 +14,10 @@ class_name Bridges
 
 signal bridges_changed
 signal message_requested(text: String)
+## Emitida al seleccionar/deseleccionar un puente (vacio = nada).
+signal bridge_selection_changed(bridge: Dictionary)
+## Emitida al eliminar un puente.
+signal bridge_demolished(bridge: Dictionary)
 
 @export var camera_path: NodePath
 
@@ -35,7 +39,10 @@ const WOOD_COLOR := Color(0.45, 0.30, 0.16)
 static var instance: Bridges = null
 
 var _cam_rig: CameraController3D
-var _bridges: Array = []       # { a, b, width, ya, yb, link }
+var _bridges: Array = []       # { id, a, b, width, ya, yb, node, link, manual, stroke_id }
+var _next_id := 0
+var _selected: Dictionary = {}
+var _marker: MeshInstance3D = null
 var _placing := false
 var _yaw := 0.0
 var _ghost: Node3D = null
@@ -110,30 +117,168 @@ func can_afford_crossing(a: Vector2, b: Vector2) -> bool:
 
 
 ## Crea un puente recto de `a` a `b` (mas su enlace de navegacion). Si `charge`,
-## cobra la madera. Devuelve true si se construyo (o si ya existia).
-func add_bridge(a: Vector2, b: Vector2, width: float, charge := true) -> bool:
+## cobra la madera. `manual` distingue los colocados a mano de los automaticos
+## de un camino (`stroke_id`). Devuelve el puente creado, o el existente, o {}.
+func add_bridge(a: Vector2, b: Vector2, width: float, charge := true,
+		manual := false, stroke_id := -1) -> Dictionary:
 	var length := a.distance_to(b)
 	if length < 0.8:
-		return false
+		return {}
 	# No duplicar el mismo cruce.
 	for br in _bridges:
 		if _same_crossing(br, a, b):
-			return true
+			return br
 	if charge:
 		var cost := cost_for(length)
 		if not Economy.can_afford({"madera": float(cost)}):
 			message_requested.emit("Falta madera para el puente (%d)" % cost)
-			return false
+			return {}
 		Economy.spend_all({"madera": float(cost)})
 	var mid := (a + b) * 0.5
 	var ends := _deck_ends(a, b, Terrain.water_level_at(mid))
 	var ya: float = ends.x
 	var yb: float = ends.y
-	add_child(_bridge_node(a, b, width, ya, yb, _mat(WOOD_COLOR)))
+	var node := _bridge_node(a, b, width, ya, yb, _mat(WOOD_COLOR))
+	add_child(node)
 	var link := _make_link(a, b, ya, yb)
-	_bridges.append({"a": a, "b": b, "width": width, "ya": ya, "yb": yb, "link": link})
+	var br := {
+		"id": _next_id, "a": a, "b": b, "width": width, "ya": ya, "yb": yb,
+		"node": node, "link": link, "manual": manual, "stroke_id": stroke_id,
+	}
+	_next_id += 1
+	_bridges.append(br)
 	bridges_changed.emit()
+	return br
+
+
+# --- Seleccion y demolicion ---
+
+func has_selection() -> bool:
+	return not _selected.is_empty()
+
+
+func get_selected() -> Dictionary:
+	return _selected
+
+
+## Puente cuya geometria (tablero) contiene `pos`, con tolerancia, o {}.
+func bridge_at(pos: Vector2, tol := 0.0) -> Dictionary:
+	var best := {}
+	var best_d := 1.0e18
+	for br in _bridges:
+		var hw: float = br["width"] * 0.5 + tol
+		var d2 := _dist_sq(pos, br["a"], br["b"])
+		if d2 <= hw * hw and d2 < best_d:
+			best_d = d2
+			best = br
+	return best
+
+
+## Selecciona el puente bajo `pos`. Devuelve true si habia uno.
+func select_at(pos: Vector2) -> bool:
+	var br := bridge_at(pos, 0.3)
+	if br.is_empty():
+		return false
+	select_bridge(br)
 	return true
+
+
+func select_bridge(br: Dictionary) -> void:
+	if not _selected.is_empty() and int(_selected["id"]) == int(br["id"]):
+		return
+	deselect_bridge()
+	_selected = br
+	_add_marker(br)
+	bridge_selection_changed.emit(_selected)
+
+
+func deselect_bridge() -> void:
+	if _selected.is_empty():
+		return
+	_remove_marker()
+	_selected = {}
+	bridge_selection_changed.emit({})
+
+
+func demolish_selected() -> void:
+	if not _selected.is_empty():
+		demolish_bridge(_selected)
+
+
+## Elimina un puente. Si es automatico, elimina tambien su camino (que necesita
+## ese puente para cruzar).
+func demolish_bridge(br: Dictionary) -> void:
+	if br.is_empty():
+		return
+	if not br["manual"] and int(br["stroke_id"]) >= 0 and Paths.instance != null:
+		Paths.instance.demolish_stroke(int(br["stroke_id"]))
+	else:
+		remove_bridge(br)
+
+
+## Quita el puente del registro y libera nodo, enlace y marcador. No toca paths.
+func remove_bridge(br: Dictionary) -> void:
+	var idx := -1
+	for i in _bridges.size():
+		if int((_bridges[i] as Dictionary)["id"]) == int(br["id"]):
+			idx = i
+			break
+	if idx == -1:
+		return
+	if not _selected.is_empty() and int(_selected["id"]) == int(br["id"]):
+		deselect_bridge()
+	else:
+		_remove_marker()
+	_bridges.remove_at(idx)
+	if br.get("node") != null and is_instance_valid(br["node"]):
+		br["node"].queue_free()
+	if br.get("link") != null and is_instance_valid(br["link"]):
+		br["link"].queue_free()
+	bridge_demolished.emit(br)
+	bridges_changed.emit()
+
+
+## Puentes automaticos creados por el trazo `stroke_id`.
+func bridges_for_stroke(stroke_id: int) -> Array:
+	var out: Array = []
+	for br in _bridges:
+		if not br["manual"] and int(br["stroke_id"]) == stroke_id:
+			out.append(br)
+	return out
+
+
+## Todos los puentes automaticos (para reasociarlos al re-trocear caminos).
+func bridges_auto() -> Array:
+	var out: Array = []
+	for br in _bridges:
+		if not br["manual"]:
+			out.append(br)
+	return out
+
+
+func _add_marker(br: Dictionary) -> void:
+	_remove_marker()
+	var node: Node3D = br.get("node")
+	if node == null or not is_instance_valid(node):
+		return
+	var length: float = (br["b"] as Vector2).distance_to(br["a"])
+	var m := MeshInstance3D.new()
+	var box := BoxMesh.new()
+	box.size = Vector3(br["width"] + 0.25, DECK_THICK + 0.25, length + 0.12)
+	m.mesh = box
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(1.0, 0.85, 0.2, 0.35)
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.material_override = mat
+	node.add_child(m)
+	_marker = m
+
+
+func _remove_marker() -> void:
+	if _marker != null and is_instance_valid(_marker):
+		_marker.queue_free()
+	_marker = null
 
 
 static func _same_crossing(br: Dictionary, a: Vector2, b: Vector2) -> bool:
