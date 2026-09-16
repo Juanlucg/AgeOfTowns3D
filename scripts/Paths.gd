@@ -11,6 +11,9 @@ class_name Paths
 ## [Villager] consulta [member instance] para saber si esta sobre un camino.
 
 signal message_requested(text: String)
+## Pide retirar vegetacion/rocas al paso del camino (lo consumen Vegetation y
+## Rocks via Main), como hace la colocacion de edificios.
+signal path_clear_requested(pos: Vector2, radius: float)
 
 @export var camera_path: NodePath
 @export var terrain_path: NodePath
@@ -19,6 +22,8 @@ signal message_requested(text: String)
 
 const SPEED_MULT := 1.6
 const MIN_STEP := 0.25          # separacion minima entre puntos del trazo (m)
+const AUTO_MARGIN := 0.25       # el puente automatico se apoya un poco en la orilla
+const CLEAR_R := 0.8            # radio de limpieza de vegetacion/rocas del camino
 const MASK_SIZE := 2048         # resolucion de la mascara (px sobre el mapa)
 const MASK_UPDATE_INTERVAL := 0.1
 const PATH_COLOR := Color(0.62, 0.54, 0.42)
@@ -148,6 +153,9 @@ func toggle_build() -> void:
 func start_build() -> void:
 	if _cam_rig == null:
 		return
+	# Camino y puente son excluyentes.
+	if Bridges.instance != null:
+		Bridges.instance.stop_build()
 	_placing = true
 	_ghost.visible = true
 	set_process(true)
@@ -208,33 +216,142 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _begin_stroke(p: Vector2) -> void:
 	_finish_stroke()
-	if not Terrain.is_water(p):
-		_current = PackedVector2Array([p])
-		_stamp(p)
+	if Terrain.is_water(p):
+		message_requested.emit("Los caminos deben comenzar en tierra")
+		return
+	_current = PackedVector2Array([p])
+	_stamp(p)
+	_clear_at(p)
 
 
 func _append_point(p: Vector2) -> void:
-	# Un camino no puede cruzar el agua: se corta el trazo.
-	if Terrain.is_water(p):
-		_finish_stroke()
-		return
 	if _current.is_empty():
 		_current = PackedVector2Array([p])
-		_stamp(p)
+		if not Terrain.is_water(p):
+			_stamp(p)
 		return
-	if _current[_current.size() - 1].distance_to(p) < MIN_STEP:
+	var last := _current[_current.size() - 1]
+	if last.distance_to(p) < MIN_STEP:
 		return
-	_stamp_segment(_current[_current.size() - 1], p)
 	_current.append(p)
+	# El color del camino se pinta solo en tierra (sobre el agua iria bajo la
+	# superficie); el tramo de agua lo cubre el puente. Al entrar/salir del agua
+	# se pinta hasta la orilla exacta para que el camino no quede cortado.
+	var last_w := Terrain.is_water(last)
+	var cur_w := Terrain.is_water(p)
+	if not last_w and not cur_w:
+		_stamp_segment(last, p)
+	elif not last_w and cur_w:
+		_stamp_segment(last, _water_edge(last, p))
+	elif last_w and not cur_w:
+		_stamp_segment(_water_edge(last, p), p)
+	_clear_at(p)
+
+
+# Retira vegetacion/rocas alrededor del punto del camino.
+func _clear_at(p: Vector2) -> void:
+	path_clear_requested.emit(p, path_width * 0.5 + CLEAR_R)
 
 
 func _finish_stroke() -> void:
 	if _current.size() >= 2:
 		_strokes.append({"pts": _current, "bounds": _bounds(_current)})
+		var err := _make_auto_bridges(_current)
+		if err != "":
+			# No se pudo cruzar (sin madera o agua no navegable): se revierte el
+			# trazo para no dejar un camino que cruce el agua.
+			_strokes.pop_back()
+			_rebuild_mask_from_strokes()
+			message_requested.emit(err)
 	_current = PackedVector2Array()
 	# Al cerrar el trazo se vuelca la mascara ya, para que el camino aparezca
 	# de inmediato (aunque se salga del modo construccion en el mismo frame).
 	_flush_mask()
+
+
+# Crea puentes en los tramos del trazo que cruzan agua (con tierra a los dos
+# lados). [Bridges] cobra la madera y crea el [NavigationLink3D]; devuelve false
+# si no hay madera (para revertir el trazo).
+func _make_auto_bridges(pts: PackedVector2Array) -> String:
+	if Bridges.instance == null or pts.size() < 2:
+		return ""
+	# 1) Buscar los cruces escaneando los segmentos COMPLETOS: asi se detecta un
+	#    rio aunque los dos puntos muestreados esten en tierra.
+	var crossings: Array = []
+	var inside := false
+	var entry := Vector2.ZERO
+	for i in range(1, pts.size()):
+		var prev := pts[i - 1]
+		var cur := pts[i]
+		var steps := maxi(1, int(ceil(prev.distance_to(cur) / 0.3)))
+		var a := prev
+		var a_w := Terrain.is_water(a)
+		for k in range(1, steps + 1):
+			var b := prev.lerp(cur, float(k) / float(steps))
+			var b_w := Terrain.is_water(b)
+			if not a_w and b_w:
+				entry = _water_edge(a, b)
+				inside = true
+			elif a_w and not b_w and inside:
+				inside = false
+				var exit_edge := _water_edge(b, a)
+				var dir := exit_edge - entry
+				if dir.length() > 0.5:
+					dir = dir.normalized()
+					crossings.append({
+						"a": entry - dir * AUTO_MARGIN,
+						"b": exit_edge + dir * AUTO_MARGIN,
+					})
+			a = b
+			a_w = b_w
+	# 2) Solo se permiten puentes sobre rios; y el coste total (sin contar
+	#    cruces que ya tengan puente) se comprueba antes de crear nada.
+	var total := 0
+	for c in crossings:
+		var ca: Vector2 = c["a"]
+		var cb: Vector2 = c["b"]
+		if Terrain.water_kind_at((ca + cb) * 0.5) != Terrain.WATER_RIVER:
+			return "Solo se pueden construir puentes sobre ríos"
+		if Bridges.instance.has_crossing(ca, cb):
+			continue
+		total += Bridges.cost_for(ca.distance_to(cb))
+	if total > 0 and not Economy.can_afford({"madera": float(total)}):
+		return "Camino cancelado: falta madera para el puente"
+	# 3) Crear los puentes (add_bridge ignora los cruces duplicados).
+	for c in crossings:
+		Bridges.instance.add_bridge(c["a"], c["b"], path_width + 0.4)
+	return ""
+
+
+# Rehace la mascara del camino desde los trazos guardados (para revertir el
+# ultimo si no se pudo crear su puente).
+func _rebuild_mask_from_strokes() -> void:
+	_mask.fill(Color(0, 0, 0, 1))
+	for s in _strokes:
+		var pts: PackedVector2Array = s["pts"]
+		for i in range(pts.size() - 1):
+			var lw := Terrain.is_water(pts[i])
+			var cw := Terrain.is_water(pts[i + 1])
+			if not lw and not cw:
+				_stamp_segment(pts[i], pts[i + 1])
+			elif not lw and cw:
+				_stamp_segment(pts[i], _water_edge(pts[i], pts[i + 1]))
+			elif lw and not cw:
+				_stamp_segment(_water_edge(pts[i], pts[i + 1]), pts[i + 1])
+	_mask_dirty = true
+
+
+# Punto del segmento a->b donde cambia tierra/agua (a y b son de distinto tipo).
+static func _water_edge(a: Vector2, b: Vector2) -> Vector2:
+	var lo := a
+	var hi := b
+	for _k in range(14):
+		var mid := (lo + hi) * 0.5
+		if Terrain.is_water(mid) == Terrain.is_water(b):
+			hi = mid
+		else:
+			lo = mid
+	return (lo + hi) * 0.5
 
 
 # Fuerza el volcado de la mascara a la textura si hay cambios pendientes.

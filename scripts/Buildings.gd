@@ -641,8 +641,11 @@ func _on_production_timer(rec: BuildingRecord) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	# Mientras se pintan caminos, Buildings no procesa la colocacion.
+	# Mientras se pintan caminos o se colocan puentes, Buildings no procesa la
+	# colocacion.
 	if Paths.instance != null and Paths.instance.is_placing():
+		return
+	if Bridges.instance != null and Bridges.instance.is_placing():
 		return
 	if event.is_action_pressed("select_building_1") and _field_mode:
 		_field_crop = "trigo"

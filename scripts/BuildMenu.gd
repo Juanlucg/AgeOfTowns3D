@@ -5,6 +5,7 @@ class_name BuildMenu
 
 @export var buildings_path: NodePath
 @export var paths_path: NodePath
+@export var bridges_path: NodePath
 
 # Carga explicita (no depende de la resolucion de class_name por el indice).
 const UIStyle := preload("res://scripts/UIStyle.gd")
@@ -16,6 +17,7 @@ var _buttons := {}
 var _group := ButtonGroup.new()
 var _buildings: Buildings
 var _paths: Paths
+var _bridges: Bridges
 var _hint: Label
 var _syncing := false
 var _tooltip: BuildingTooltip
@@ -27,6 +29,7 @@ func _ready() -> void:
 		push_error("BuildMenu: buildings_path no apunta a un Buildings en el .tscn")
 		return
 	_paths = get_node_or_null(paths_path) as Paths
+	_bridges = get_node_or_null(bridges_path) as Bridges
 	layer = 10
 	_buildings.selection_changed.connect(_on_selection_changed)
 
@@ -73,13 +76,19 @@ func _ready() -> void:
 	vbox.add_child(path_row)
 	var path_btn := Button.new()
 	path_btn.text = "Camino (P)"
-	path_btn.custom_minimum_size = Vector2(0, 30)
+	path_btn.custom_minimum_size = Vector2(120, 30)
 	path_btn.add_theme_font_size_override("font_size", 12)
 	path_btn.pressed.connect(_on_path_pressed)
 	path_row.add_child(path_btn)
+	var bridge_btn := Button.new()
+	bridge_btn.text = "Puente (B)"
+	bridge_btn.custom_minimum_size = Vector2(120, 30)
+	bridge_btn.add_theme_font_size_override("font_size", 12)
+	bridge_btn.pressed.connect(_on_bridge_pressed)
+	path_row.add_child(bridge_btn)
 
 	_hint = Label.new()
-	_hint.text = "1-7: edificio   |   P: camino   |   clic: colocar   |   R: rotar   |   Esc/der.: cancelar   |   Delete: demoler"
+	_hint.text = "1-7: edificio | P: camino | B: puente | clic: colocar | R: rotar | Esc/der.: cancelar | Delete: demoler"
 	_hint.add_theme_font_size_override("font_size", 12)
 	_hint.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
 	_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -102,15 +111,28 @@ func _on_pressed(type: StringName) -> void:
 		return
 	if _paths != null:
 		_paths.stop_build()
+	if _bridges != null:
+		_bridges.stop_build()
 	_buildings.select(String(type))
 
 
 func _on_path_pressed() -> void:
 	if _paths == null:
 		return
-	# Camino y edificios son excluyentes: cancelar la colocacion pendiente.
+	# Camino, puente y edificios son excluyentes: cancelar lo demas.
+	if _bridges != null:
+		_bridges.stop_build()
 	_buildings.cancel_placement()
 	_paths.toggle_build()
+
+
+func _on_bridge_pressed() -> void:
+	if _bridges == null:
+		return
+	if _paths != null:
+		_paths.stop_build()
+	_buildings.cancel_placement()
+	_bridges.toggle_build()
 
 
 func _on_selection_changed(type: StringName) -> void:

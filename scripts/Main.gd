@@ -25,6 +25,7 @@ extends Node3D
 @onready var info_menu: BuildingInfoMenu = $InfoLayer/BuildingInfoMenu
 @onready var game_over: GameOverOverlay = $GameOverOverlay
 @onready var paths: Paths = $Paths
+@onready var bridges: Bridges = $Bridges
 
 
 func _ready() -> void:
@@ -38,6 +39,9 @@ func _ready() -> void:
 	buildings.place_clear_requested.connect(vegetation.clear_near)
 	buildings.place_clear_requested.connect(rocks.clear_near)
 	paths.message_requested.connect(hud.show_message)
+	paths.path_clear_requested.connect(vegetation.clear_near)
+	paths.path_clear_requested.connect(rocks.clear_near)
+	bridges.message_requested.connect(hud.show_message)
 	info_menu.bind(buildings, villagers)
 	buildings.building_focus_changed.connect(_on_building_focus)
 	buildings.building_demolished.connect(minimap._on_building_demolished)

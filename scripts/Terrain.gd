@@ -99,6 +99,13 @@ const CLASS_FOREST := 3
 const CLASS_ROCK := 4
 const CLASS_SNOW := 5
 
+# Tipo de masa de agua, para poder distinguir rio, mar y lago. Se marca durante
+# la generacion (donde el algoritmo sabe con certeza que esta creando).
+const WATER_LAND := 0
+const WATER_SEA := 1
+const WATER_RIVER := 2
+const WATER_LAKE := 3
+
 # Paleta de colores por bioma
 const COLOR_WATER_SHALLOW := Color(0.20, 0.50, 0.72)
 const COLOR_WATER_DEEP := Color(0.07, 0.22, 0.42)
@@ -114,6 +121,7 @@ var _forest_px := PackedFloat32Array()  # ruido de bosque por pixel (W*H)
 var _water_dist_px := PackedFloat32Array()
 var _wl_px := PackedFloat32Array()     # nivel de agua por pixel (mar=0, rios y lagos elevados)
 var _lake_px := PackedByteArray()      # 1 = lago protegido (no se rellena)
+var _water_kind_px := PackedByteArray()  # WATER_LAND/SEA/RIVER/LAKE por pixel
 var _width := 0
 var _height := 0
 var _px_per_unit := 0.0
@@ -129,7 +137,7 @@ var _px_per_unit := 0.0
 # modo que tocar cualquier parametro de generacion (SEED, MOUNT_AMP, el radio
 # de los lagos...) la invalida solo. Si cambias el ALGORITMO sin tocar ninguna
 # constante, sube CACHE_VERSION a mano o borra el fichero.
-const CACHE_VERSION := 1
+const CACHE_VERSION := 3
 const CACHE_PATH := "user://terrain_cache.bin"
 const CACHE_MAGIC := 0x41335443  # "AOT3" (formato del volcado)
 
@@ -166,10 +174,12 @@ func _load_cache() -> bool:
 	_forest_px = f.get_var()
 	_water_dist_px = f.get_var()
 	_class_px = f.get_var()
+	_water_kind_px = f.get_var()
 	# Un volcado truncado (disco lleno, cierre a lo bruto) no debe dejar el
 	# juego con arrays a medias: mejor regenerar.
 	if (_height_px.size() != n or _wl_px.size() != n or _forest_px.size() != n
-			or _water_dist_px.size() != n or _class_px.size() != n):
+			or _water_dist_px.size() != n or _class_px.size() != n
+			or _water_kind_px.size() != n):
 		push_warning("[Terrain] cache corrupta o truncada, se regenera")
 		_width = 0
 		_height = 0
@@ -191,6 +201,7 @@ func _save_cache() -> void:
 	f.store_var(_forest_px)
 	f.store_var(_water_dist_px)
 	f.store_var(_class_px)
+	f.store_var(_water_kind_px)
 
 
 func _generate() -> void:
@@ -284,6 +295,8 @@ func _generate() -> void:
 	_wl_px.fill(0.0)
 	_lake_px.resize(n)
 	_lake_px.fill(0)
+	_water_kind_px.resize(n)
+	_water_kind_px.fill(WATER_LAND)
 	for idx in range(n):
 		var i := idx % _width
 		var j := idx / _width
@@ -391,6 +404,7 @@ func _generate() -> void:
 				var wl := minf(lerpf(lake_wl, SEA_LEVEL, s), bank - RIVER_WATER_MARGIN)
 				wl = lerpf(wl, SEA_LEVEL, mf)
 				_wl_px[idx] = wl
+				_water_kind_px[idx] = WATER_RIVER
 
 		# --- Lago de nacimiento: pequeno lago hundido al pie de la montaña, del
 		# que nace el rio ---
@@ -429,6 +443,7 @@ func _generate() -> void:
 				if heights[idx] < lake_wl:
 					_wl_px[idx] = lake_wl
 					_lake_px[idx] = 1
+					_water_kind_px[idx] = WATER_LAKE
 		print_verbose("[Terrain] rio: fuente=%s boca=%s (lado opuesto)" % [src, mouth])
 
 	# --- Lago de montaña: un solo lago, de tamano medio, con orilla irregular
@@ -493,6 +508,7 @@ func _generate() -> void:
 				heights[j * _width + i] = target
 				_wl_px[j * _width + i] = MOUNTAIN_LAKE_WL
 				_lake_px[j * _width + i] = 1
+				_water_kind_px[j * _width + i] = WATER_LAKE
 		# Borde del lago: eleva el anillo exterior para que el agua no flote sobre laderas bajas
 		for j in range(y0, y1 + 1):
 			for i in range(x0, x1 + 1):
@@ -547,6 +563,7 @@ func _generate() -> void:
 					heights[idx] = minf(orig, lerpf(orig, floor_h, sw))
 					_wl_px[idx] = MOUNTAIN_LAKE_WL
 					_lake_px[idx] = 1
+					_water_kind_px[idx] = WATER_LAKE
 				else:
 					# Valle seco: del borde del agua hacia el bosque.
 					var u := clampf((along_u - bay_end) / 4.0, 0.0, 1.0)
@@ -633,6 +650,7 @@ func _generate() -> void:
 		if not wcomp_ocean[c] and wlake_min[c] < lake_min_px and not wcomp_lake[c]:
 			heights[i] = 0.1
 			_wl_px[i] = 0.0
+			_water_kind_px[i] = WATER_LAND
 			filled += 1
 	_height_px = heights
 	print_verbose("[Terrain] lagos_rellenados=%d" % filled)
@@ -663,6 +681,14 @@ func _generate() -> void:
 			cls[idx] = CLASS_ROCK
 		else:
 			cls[idx] = CLASS_FOREST if forest_arr[idx] > FOREST_THRESHOLD else CLASS_PLAINS
+		# El tipo de agua debe seguir a la clasificacion FINAL de agua: lo que
+		# no se marco como rio/lago es mar, y lo que el suavizado dejo en tierra
+		# (cauce seco) deja de ser agua.
+		if is_water:
+			if _water_kind_px[idx] == WATER_LAND:
+				_water_kind_px[idx] = WATER_SEA
+		else:
+			_water_kind_px[idx] = WATER_LAND
 	_class_px = cls
 	_water_dist_px = TerrainUtils.distance_field(water_mask, _width, _height)
 
@@ -1023,6 +1049,13 @@ func terrain_type(p: Vector2) -> String:
 
 func is_water(p: Vector2) -> bool:
 	return class_at(p) == CLASS_WATER
+
+
+## Tipo de agua en `p`: WATER_LAND, WATER_SEA, WATER_RIVER o WATER_LAKE.
+func water_kind_at(p: Vector2) -> int:
+	if _width == 0:
+		return WATER_LAND
+	return _water_kind_px[_pixel_index(p)]
 
 
 func biome_color(c: int, h: float) -> Color:

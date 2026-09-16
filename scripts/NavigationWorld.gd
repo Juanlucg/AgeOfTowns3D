@@ -3,6 +3,13 @@ extends NavigationRegion3D
 
 
 func _ready() -> void:
+	rebuild()
+
+
+## Reconstruye la malla de navegacion. SOLO tierra: el agua queda fuera. Los
+## cruces de rio los aportan los [NavigationLink3D] de cada puente ([Bridges]),
+## no celdas de agua marcadas como navegables.
+func rebuild() -> void:
 	var size := Terrain.WORLD_SIZE
 	var cell_size := 3.0
 	var mesh := NavigationMesh.new()

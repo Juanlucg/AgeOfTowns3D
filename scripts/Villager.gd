@@ -9,6 +9,9 @@ const VISUAL_SCALE := Vector3(0.35, 0.35, 0.35)
 const HOMELESS_HAPPINESS_PENALTY := 6.0
 ## Color de camiseta que marca a un aldeano sin hogar.
 const HOMELESS_SHIRT_COLOR := Color(0.52, 0.45, 0.38)
+## Tolerancia al pisar un puente: el NavigationAgent puede devolver un punto un
+## poco fuera del ancho visual del tablero.
+const BRIDGE_TOL := 0.8
 
 var home_position := Vector2.ZERO
 var home_door_position := Vector2.ZERO
@@ -19,6 +22,9 @@ var has_home := false
 ## Punto de reunion (plaza) si existe: los aldeanos sin trabajo se juntan ahi.
 var gathering_position := Vector2.ZERO
 var has_gathering := false
+## Refugio (hoguera inicial) donde duerme si no tiene casa.
+var shelter_position := Vector2.ZERO
+var has_shelter := false
 var work_position := Vector2.ZERO
 var work_name := ""
 var display_name := "Aldeano"
@@ -87,6 +93,21 @@ func set_gathering_point(p: Vector2) -> void:
 	gathering_position = p if has_gathering else Vector2.ZERO
 
 
+## Fija (o quita, con Vector2.INF) el refugio (hoguera) para los sin casa.
+func set_shelter_point(p: Vector2) -> void:
+	has_shelter = p != Vector2.INF
+	shelter_position = p if has_shelter else Vector2.ZERO
+
+
+# Donde descansa de noche: su casa si tiene, si no la hoguera.
+func _rest_target() -> Vector2:
+	if has_home:
+		return home_door_position
+	if has_shelter:
+		return shelter_position
+	return home_door_position
+
+
 ## Bonus de felicidad (plaza).
 func add_happiness(amount: float) -> void:
 	if amount <= 0.0:
@@ -115,7 +136,7 @@ func set_work_schedule(at_work: bool) -> void:
 	if _at_work:
 		_choose_target()
 	else:
-		_target = home_door_position
+		_target = _rest_target()
 		# Al volver a casa hay que reorientar tambien el agente de navegacion;
 		# si no, sigue avanzando por la ruta antigua hacia el trabajo.
 		_set_navigation_target()
@@ -209,11 +230,19 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
+	var current := Vector2(global_position.x, global_position.z)
+	# De noche, al llegar a casa el aldeano "entra" a dormir: se oculta el
+	# modelo para que no se quede de pie en la puerta.
+	if _visual != null:
+		# Solo se oculta quien duerme DENTRO de una casa. En la hoguera los
+		# aldeanos siguen a la vista, alrededor del fuego.
+		_visual.visible = not (_resting and has_home \
+			and current.distance_to(home_door_position) <= ARRIVAL_DISTANCE)
+
 	if _wait_time > 0.0:
 		_wait_time -= delta
 		return
 
-	var current := Vector2(global_position.x, global_position.z)
 	var distance := current.distance_to(_target)
 	if distance <= ARRIVAL_DISTANCE:
 		if _stay_home():
@@ -236,17 +265,28 @@ func _process(delta: float) -> void:
 				and next_2d.distance_to(_target) < current.distance_to(_target):
 			navigation_target = next_2d
 	var direction := current.direction_to(navigation_target)
-	# Por los caminos se anda mas rapido.
+	# Por los caminos y puentes se anda mas rapido.
+	var on_bridge_now := Bridges.instance != null and Bridges.instance.is_bridge(current, BRIDGE_TOL)
 	var speed := WALK_SPEED
 	if Paths.instance != null:
 		speed *= Paths.instance.speed_multiplier_at(current)
+	if on_bridge_now:
+		speed = maxf(speed, WALK_SPEED * Bridges.SPEED_MULT)
 	var next := current + direction * speed * delta
-	if Terrain.is_water(next):
+	var on_bridge_next := Bridges.instance != null and Bridges.instance.is_bridge(next, BRIDGE_TOL)
+	# La guarda de agua no cancela un cruce valido por el puente (con tolerancia
+	# para no atascarse si el punto de navegacion cae justo fuera del tablero).
+	if Terrain.is_water(next) and not on_bridge_next and not on_bridge_now:
 		# El navmesh no cubre el agua; sin esta guarda el aldeano puede meterse
 		# en el mar o en un lago en linea recta cuando no hay ruta valida.
 		_choose_target()
 		return
-	global_position = Vector3(next.x, Terrain.height_at(next), next.y)
+	var ground_h := Terrain.height_at(next)
+	if on_bridge_next:
+		ground_h = Bridges.instance.deck_height_at(next, BRIDGE_TOL)
+	elif on_bridge_now:
+		ground_h = Bridges.instance.deck_height_at(current, BRIDGE_TOL)
+	global_position = Vector3(next.x, ground_h, next.y)
 	rotation.y = atan2(direction.x, direction.y)
 	_walk_phase += delta * 10.0
 	_visual.position.y = 0.02 + sin(_walk_phase) * 0.015
@@ -259,8 +299,8 @@ func _choose_target() -> void:
 		_set_navigation_target()
 		return
 	if _stay_home():
-		# Descanso o comida: sin deambular, se queda en la puerta de casa.
-		_target = home_door_position
+		# Descanso o comida: sin deambular, se queda en casa o en la hoguera.
+		_target = _rest_target()
 		_set_navigation_target()
 		return
 	# Punto base de deambulacion: la plaza si la hay (reunion), si no la casa.

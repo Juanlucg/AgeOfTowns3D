@@ -3,6 +3,7 @@ class_name Villagers
 ## Gestiona los aldeanos asociados a las casas construidas.
 
 const VILLAGER_SCRIPT := preload("res://scripts/Villager.gd")
+const CAMPFIRE_SCRIPT := preload("res://scripts/Campfire.gd")
 const INITIAL_VILLAGERS := 10
 const FOOD_PER_VILLAGER_PER_DAY := 1.0
 const STARVATION_DAYS_TO_DEFEAT := 3
@@ -35,6 +36,8 @@ var _defeat_requested := false
 var _homeless_count := 0
 var _next_name_id := 0
 var _meal_time := false
+## Hoguera inicial donde duermen los aldeanos sin casa.
+var _shelter_pos := Vector2.INF
 ## Resultado de la ultima comida (true = todos comieron). Se evalua al
 ## amanecer para la inanicion en vez de consumir la comida a medianoche.
 var _last_meal_fed := true
@@ -111,6 +114,11 @@ func _is_housed(villager) -> bool:
 
 func _spawn_initial_population() -> void:
 	var start := _find_initial_position()
+	# Hoguera inicial: refugio de los aldeanos sin casa.
+	_shelter_pos = start
+	var campfire := CAMPFIRE_SCRIPT.new()
+	campfire.position = Vector3(start.x, Terrain.height_at(start), start.y)
+	add_child(campfire)
 	for index in INITIAL_VILLAGERS:
 		var offset := Vector2((index % 2) * 0.35 - 0.18, (index / 2) * 0.35)
 		_create_villager(start, offset, Vector2.ZERO, false)
@@ -124,6 +132,7 @@ func _create_villager(home: Vector2, spawn_offset: Vector2, door_offset: Vector2
 	_next_name_id += 1
 	villager.initialize(home, spawn_offset, door_offset, housed)
 	villager.set_gathering_point(_buildings.get_gathering_point())
+	villager.set_shelter_point(_shelter_pos)
 	add_child(villager)
 	_villagers.append(villager)
 	return villager
@@ -135,6 +144,7 @@ func _refresh_gathering() -> void:
 	for villager in _villagers:
 		if is_instance_valid(villager):
 			villager.set_gathering_point(point)
+			villager.set_shelter_point(_shelter_pos)
 
 
 func _find_initial_position() -> Vector2:
