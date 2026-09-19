@@ -23,14 +23,9 @@ const CELL := 0.5
 ## Franja de tierra desnuda alrededor de los cultivos. Con 0.5 sobraba casi un
 ## metro de tierra entre la ultima planta y la valla.
 const MARGIN := 0.3
-## Separacion entre surcos y entre plantas dentro del surco. Mas junto dentro
-## del surco que entre surcos: es lo que hace que se lean como filas sembradas
-## y no como una cuadricula.
-const ROW_SPACING := 0.42
-const PLANT_SPACING := 0.26
-## Tamano de una planta madura.
-const PLANT_HEIGHT := 0.34
-const PLANT_WIDTH := 0.10
+## Hueco entre la ultima planta y la valla. Los cultivos llenan el campo hasta
+## casi la valla (antes solo cubrian la zona sembrada y quedaba un borde ancho).
+const CROP_INSET := 0.06
 ## Semilla fija para la variacion de altura y giro de cada planta: si dependiera
 ## del azar, la vista previa cambiaria de aspecto en cada frame mientras
 ## arrastras el raton.
@@ -56,15 +51,25 @@ static func outer_size(size: Vector2) -> Vector2:
 ## la zona sembrada (sin margen) y [param yaw] su orientacion en radianes, la
 ## misma que la de la granja.
 ##
-## [param crop_color] es el color del cultivo (trigo/zanahoria/bayas) y
-## [param ghost] hace el material translucido para la vista previa.
+## [param crop_color] es el color del cultivo (trigo/zanahoria/bayas),
+## [param grow_seconds] lo que tarda en madurar y [param ghost] hace el material
+## translucido para la vista previa.
+##
+## [param house_local] es el centro de la casa en coordenadas del campo y
+## [param house_half_side] su media anchura: la valla del lado cercano se corta
+## ahi para que la casa quede encajada en el hueco. Con house_half_side <= 0 no
+## se abre hueco.
 static func build(
 	center: Vector2,
 	size: Vector2,
 	yaw: float,
 	crop_color: Color,
+	grow_seconds: float,
+	crop_id: String,
 	ghost: bool,
-	get_height: Callable = Callable()
+	get_height: Callable = Callable(),
+	house_local: Vector2 = Vector2.ZERO,
+	house_half_side: float = -1.0
 ) -> Node3D:
 	if not get_height.is_valid():
 		get_height = func(p: Vector2) -> float: return Terrain.height_at(p)
@@ -169,56 +174,123 @@ static func build(
 	soil_mi.material_override = soil_mat
 	node.add_child(soil_mi)
 
+	# El fantasma enseña la valla (en translucido) para saber donde quedara el
+	# campo, pero no los cultivos.
+	_add_fence(node, hx, hz, h, house_local.x, house_half_side, ghost)
 	if not ghost:
-		_add_fence(node, hx, hz, h)
-	_add_crops(node, size, crop_color, ghost, h)
+		_add_crops(node, outer, crop_color, grow_seconds, crop_id, h)
 	return node
 
 
 # Valla perimetral con postes cada metro y dos railes horizontales.
 # `h` da la altura del terreno para un punto en coordenadas del campo.
-static func _add_fence(node: Node3D, hx: float, hz: float, h: Callable) -> void:
-	var fence_mat := _mat(FENCE_COLOR)
+#
+# La casa se apoya sobre el lado cercano (z = -hz): ahi se abre un hueco del
+# ancho de la casa (`house_x` +- `house_half`) y la valla termina/empieza en los
+# dos postes que tocan sus esquinas.
+static func _add_fence(
+	node: Node3D, hx: float, hz: float, h: Callable,
+	house_x: float = 0.0, house_half: float = -1.0, ghost: bool = false
+) -> void:
+	# En el fantasma la valla va translucida para leerse como vista previa.
+	var fence_mat := _ghost_mat(Color(FENCE_COLOR.r, FENCE_COLOR.g, FENCE_COLOR.b, 0.55)) \
+		if ghost else _mat(FENCE_COLOR)
 	var post := BoxMesh.new()
 	post.size = Vector3(0.03, 0.2, 0.03)
+	var g0 := 0.0
+	var g1 := 0.0
+	var gap := false
+	if house_half > 0.0:
+		g0 = clampf(house_x - house_half, -hx, hx)
+		g1 = clampf(house_x + house_half, -hx, hx)
+		gap = g1 - g0 > 0.05
+
+	# Postes de los lados cercano (z=-hz) y lejano (z=+hz), saltando las
+	# esquinas (van aparte, siempre, para no perderlas ni duplicarlas).
 	var px: float = -hx
 	while px <= hx + 0.01:
-		node.add_child(_part(post, fence_mat, Vector3(px, h.call(px, -hz) + 0.10, -hz)))
-		node.add_child(_part(post, fence_mat, Vector3(px, h.call(px, hz) + 0.10, hz)))
+		if px > -hx + 0.001 and px < hx - 0.001:
+			if not (gap and px > g0 + 0.001 and px < g1 - 0.001):
+				node.add_child(_part(post, fence_mat, Vector3(px, h.call(px, -hz) + 0.10, -hz)))
+			node.add_child(_part(post, fence_mat, Vector3(px, h.call(px, hz) + 0.10, hz)))
 		px += FENCE_SPACING
+	# Postes laterales (x=-hx, x=+hx), saltando esquinas.
 	var pz: float = -hz
 	while pz <= hz + 0.01:
-		node.add_child(_part(post, fence_mat, Vector3(-hx, h.call(-hx, pz) + 0.10, pz)))
-		node.add_child(_part(post, fence_mat, Vector3(hx, h.call(hx, pz) + 0.10, pz)))
+		if pz > -hz + 0.001 and pz < hz - 0.001:
+			node.add_child(_part(post, fence_mat, Vector3(-hx, h.call(-hx, pz) + 0.10, pz)))
+			node.add_child(_part(post, fence_mat, Vector3(hx, h.call(hx, pz) + 0.10, pz)))
 		pz += FENCE_SPACING
+	# Las cuatro esquinas, explícitas.
+	for sx: float in [-hx, hx]:
+		for sz: float in [-hz, hz]:
+			node.add_child(_part(post, fence_mat, Vector3(sx, h.call(sx, sz) + 0.10, sz)))
+	# Postes de arranque y final del hueco de la casa (solo interiores).
+	if gap:
+		for gx: float in [g0, g1]:
+			if gx > -hx + 0.05 and gx < hx - 0.05:
+				node.add_child(_part(post, fence_mat, Vector3(gx, h.call(gx, -hz) + 0.10, -hz)))
 
 	var rail := BoxMesh.new()
 	rail.size = Vector3(0.02, 0.02, 1.0)
-	# Lados largos (paralelos a z)
+	# Lados paralelos a z (x = +-hx). Cada tramo sigue la pendiente del terreno.
 	pz = -hz
 	while pz < hz - 0.01:
 		var nz: float = minf(pz + FENCE_SPACING, hz)
-		var seg: float = nz - pz
 		for edge: float in [-hx, hx]:
-			var mid_h: float = (h.call(edge, pz) + h.call(edge, nz)) * 0.5
 			for dy: float in [0.15, 0.06]:
-				var r := _part(rail, fence_mat, Vector3(edge, mid_h + dy, pz + seg * 0.5))
-				r.scale.z = seg
-				node.add_child(r)
+				_rail_seg(node, fence_mat, rail, edge, pz, edge, nz, h, dy)
 		pz = nz
-	# Lados cortos (paralelos a x)
-	px = -hx
-	while px < hx - 0.01:
-		var nx: float = minf(px + FENCE_SPACING, hx)
-		var seg: float = nx - px
-		for edge: float in [-hz, hz]:
-			var mid_h: float = (h.call(px, edge) + h.call(nx, edge)) * 0.5
-			for dy: float in [0.15, 0.06]:
-				var r := _part(rail, fence_mat, Vector3(px + seg * 0.5, mid_h + dy, edge))
-				r.rotation.y = PI * 0.5
-				r.scale.z = seg
-				node.add_child(r)
-		px = nx
+	# Lado cercano (z=-hz): en dos tramos si la casa abre hueco.
+	if gap:
+		_add_rails_x(node, fence_mat, rail, h, -hx, g0, -hz)
+		_add_rails_x(node, fence_mat, rail, h, g1, hx, -hz)
+	else:
+		_add_rails_x(node, fence_mat, rail, h, -hx, hx, -hz)
+	# Lado lejano (z=+hz).
+	_add_rails_x(node, fence_mat, rail, h, -hx, hx, hz)
+
+
+# Raíles a lo largo de X entre `x0` y `x1`, troceados en tramos de
+# FENCE_SPACING y adaptados a la pendiente.
+static func _add_rails_x(
+	node: Node3D, mat: Material, rail: Mesh, h: Callable,
+	x0: float, x1: float, z: float
+) -> void:
+	if x1 - x0 < 0.05:
+		return
+	var x: float = x0
+	while x < x1 - 0.01:
+		var nx: float = minf(x + FENCE_SPACING, x1)
+		for dy: float in [0.15, 0.06]:
+			_rail_seg(node, mat, rail, x, z, nx, z, h, dy)
+		x = nx
+
+
+# Tramo de rail entre dos puntos del terreno, inclinado para seguirlo. Antes era
+# una caja horizontal a la altura media, asi que en pendiente cada tramo quedaba
+# a distinta altura y la valla parecia rota (escalones).
+static func _rail_seg(
+	node: Node3D, mat: Material, rail: Mesh,
+	x0: float, z0: float, x1: float, z1: float, h: Callable, dy: float
+) -> void:
+	var p0 := Vector3(x0, h.call(x0, z0) + dy, z0)
+	var p1 := Vector3(x1, h.call(x1, z1) + dy, z1)
+	var delta := p1 - p0
+	var length := delta.length()
+	if length < 0.001:
+		return
+	var dir := delta / length
+	var xc := Vector3.UP.cross(dir)
+	if xc.length_squared() < 1e-6:
+		xc = Vector3.RIGHT
+	xc = xc.normalized()
+	var yc := dir.cross(xc).normalized()
+	var mi := MeshInstance3D.new()
+	mi.mesh = rail
+	mi.material_override = mat
+	mi.transform = Transform3D(Basis(xc, yc, dir * length), (p0 + p1) * 0.5)
+	node.add_child(mi)
 
 
 # Plantas en grid via MultiMesh (una sola draw call para todo el campo).
@@ -230,52 +302,127 @@ static func _add_fence(node: Node3D, hx: float, hz: float, h: Callable) -> void:
 # sea enterradas bajo el terreno. Por eso los huertos salian pelados.
 #
 # Es una llamada por planta en vez de una sola asignacion, pero un huerto son
-# como mucho unos cientos (FIELD_MAX_AREA / (ROW_SPACING * PLANT_SPACING)) y asi el
-# formato lo pone Godot, no nosotros. Es lo que ya hacen Vegetation y Rocks.
-static func _add_crops(node: Node3D, size: Vector2, crop_color: Color, ghost: bool, h: Callable) -> void:
-	var plant := BoxMesh.new()
-	plant.size = Vector3(PLANT_WIDTH, PLANT_HEIGHT, PLANT_WIDTH)
+# como mucho unos cientos de plantas y asi el formato lo pone Godot, no
+# nosotros. Es lo que ya hacen Vegetation y Rocks.
+static func _add_crops(
+	node: Node3D, outer: Vector2, crop_color: Color, grow_seconds: float,
+	crop_id: String, h: Callable
+) -> void:
+	# Cada cultivo tiene su forma, altura, densidad y patron de siembra: no solo
+	# cambia el color.
+	var shape := _crop_shape(crop_id)
+	var plant_height: float = shape["height"]
+	var radius: float = shape["radius"]
+	var row_spacing: float = shape["row"]
+	var plant_spacing: float = shape["plant"]
+	var stagger: float = shape["stagger"]
+	var yaw_jitter: float = shape["yaw"]
+	var h_lo: float = shape["h_lo"]
+	var h_hi: float = shape["h_hi"]
+	var tint_lo: float = shape["tint_lo"]
+	var tint_hi: float = shape["tint_hi"]
+	var plant := _plant_mesh(shape["kind"], plant_height, radius)
 	var bases := PackedVector3Array()
 	var height_var := PackedFloat32Array()
 	var yaws := PackedFloat32Array()
 	var rng := RandomNumberGenerator.new()
 	rng.seed = CROP_SEED
-	var hx: float = size.x * 0.5
-	var hz: float = size.y * 0.5
-	var pz: float = -hz + ROW_SPACING * 0.5
+	# Los cultivos llenan el campo hasta CROP_INSET de la valla (no la tocan).
+	# Se descuenta el radio de la planta para que ninguna asome por encima.
+	var hx: float = maxf(0.0, outer.x * 0.5 - CROP_INSET - radius)
+	var hz: float = maxf(0.0, outer.y * 0.5 - CROP_INSET - radius)
+	var row := 0
+	var pz: float = -hz + row_spacing * 0.5
 	while pz <= hz:
-		var px: float = -hx + PLANT_SPACING * 0.5
+		# Las filas impares pueden ir desplazadas media planta (a tresbolillo).
+		var shift: float = plant_spacing * 0.5
+		if stagger > 0.0 and row % 2 == 1:
+			shift += plant_spacing * stagger
+		var px: float = -hx + shift
 		while px <= hx:
 			bases.append(Vector3(px, h.call(px, pz) + SOIL_RAISE, pz))
-			height_var.append(rng.randf_range(0.82, 1.18))
-			yaws.append(rng.randf_range(0.0, TAU))
-			px += PLANT_SPACING
-		pz += ROW_SPACING
+			height_var.append(rng.randf_range(h_lo, h_hi))
+			yaws.append(rng.randf_range(0.0, yaw_jitter))
+			px += plant_spacing
+		pz += row_spacing
+		row += 1
 	if bases.is_empty():
 		return
 
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
+	# Color por instancia (multiplica al del material, ver CropField.setup): da
+	# una textura de tonos que rompe el bloque de color plano.
+	mm.use_colors = true
 	mm.mesh = plant
 	mm.instance_count = bases.size()
-
-	if ghost:
-		# La vista previa no crece: ensena el campo ya sembrado.
-		for i in bases.size():
-			var b: Vector3 = bases[i]
-			mm.set_instance_transform(i, Transform3D(
-				Basis(Vector3.UP, yaws[i]),
-				Vector3(b.x, b.y + PLANT_HEIGHT * 0.5, b.z)))
-		var preview := MultiMeshInstance3D.new()
-		preview.multimesh = mm
-		preview.material_override = _ghost_mat(crop_color)
-		node.add_child(preview)
-		return
+	for i in bases.size():
+		var t := rng.randf_range(tint_lo, tint_hi)
+		mm.set_instance_color(i, Color(t, t, t))
 
 	var crops := CropField.new()
+	crops.name = "CropField"
 	crops.multimesh = mm
 	node.add_child(crops)
-	crops.setup(PLANT_HEIGHT, bases, height_var, yaws, crop_color)
+	crops.setup(plant_height, bases, height_var, yaws, crop_color, grow_seconds)
+
+
+# Aspecto y forma de cultivar de cada planta. No solo cambia el color: cambian
+# la malla, la altura, el tamano, la separacion de los surcos y si van a
+# tresbolillo.
+#   - Trigo: cajas rectangulares muy juntas: forman una alfombra solida que
+#     llena el campo.
+#   - Zanahoria: cono invertido (la raiz), en filas mas separadas.
+#   - Bayas: racimo de bolas (las frutas), en cuadricula amplia.
+static func _crop_shape(crop_id: String) -> Dictionary:
+	match crop_id:
+		"zanahoria":
+			return {"kind": "carrot", "height": 0.22, "radius": 0.10,
+				"row": 0.30, "plant": 0.18, "stagger": 0.5,
+				"yaw": TAU, "h_lo": 0.85, "h_hi": 1.15,
+				"tint_lo": 0.90, "tint_hi": 1.10}
+		"bayas":
+			return {"kind": "berries", "height": 0.26, "radius": 0.18,
+				"row": 0.52, "plant": 0.42, "stagger": 0.5,
+				"yaw": TAU, "h_lo": 0.85, "h_hi": 1.15,
+				"tint_lo": 0.88, "tint_hi": 1.12}
+		_:
+			# Trigo: sin giro aleatorio (uniforme), con variacion de altura y de
+			# tono por planta para que no parezca una losa amarilla.
+			return {"kind": "block", "height": 0.45, "radius": 0.09,
+				"row": 0.16, "plant": 0.14, "stagger": 0.5,
+				"yaw": 0.0, "h_lo": 0.88, "h_hi": 1.18,
+				"tint_lo": 0.78, "tint_hi": 1.16}
+
+
+static func _plant_mesh(kind: String, height: float, radius: float) -> Mesh:
+	match kind:
+		"carrot":
+			# Cono invertido: ancho arriba, punta abajo.
+			var cone := CylinderMesh.new()
+			cone.top_radius = radius
+			cone.bottom_radius = 0.0
+			cone.height = height
+			cone.radial_segments = 7
+			return cone
+		"berries":
+			# Racimo de tres bolas, centrado en vertical (alto = height).
+			var r := height / 3.0
+			var berry := SphereMesh.new()
+			berry.radius = r
+			berry.height = r * 2.0
+			berry.radial_segments = 8
+			berry.rings = 4
+			var st := SurfaceTool.new()
+			st.append_from(berry, 0, Transform3D(Basis.IDENTITY, Vector3(0.0, -r * 0.5, 0.0)))
+			st.append_from(berry, 0, Transform3D(Basis.IDENTITY, Vector3(0.0, r * 0.5, 0.0)))
+			st.append_from(berry, 0, Transform3D(Basis.IDENTITY, Vector3(r * 0.9, 0.0, r * 0.5)))
+			return st.commit()
+		_:
+			# Bloque de trigo: prisma rectangular.
+			var block := BoxMesh.new()
+			block.size = Vector3(radius * 2.0, height, radius * 2.0)
+			return block
 
 
 static func _part(m: Mesh, mat: Material, pos: Vector3) -> MeshInstance3D:

@@ -24,6 +24,14 @@ signal selection_changed(type: StringName)
 signal building_focus_changed(rec: BuildingRecord, screen_pos: Vector2)
 signal message_requested(text: String)
 signal place_clear_requested(pos: Vector2, radius: float)
+## Pide a la UI que el jugador elija cultivo para un campo ya delimitado.
+## `options` es un Array de diccionarios {id, name, color} y `anchor` la posicion
+## de mundo de la granja (la UI la proyecta para anclar el menu encima). La UI
+## responde con choose_field_crop() o cancel_field_crop_selection().
+signal crop_select_requested(options: Array, anchor: Vector3)
+## Avisa de donde trabaja un edificio: en las granjas, el centro del campo (los
+## aldeanos van alli a sembrar/cosechar) en vez de la casita.
+signal work_area_changed(pos: Vector2, area: Vector2)
 
 @export var camera_path: NodePath
 
@@ -35,26 +43,59 @@ const HEIGHT_SAMPLE_STEP := 1.0
 const ROTATE_SPEED := 120.0
 const FIELD_MIN := 1.2
 const FIELD_MAX_AREA := 60.0
-## Comida por m2 de campo y trabajador e intervalo (bajado para que la granja
-## no produzca tanto; sigue por encima de la cantera).
-const FIELD_RATE := 0.05
-## Hueco que se deja a la vista entre la casa de la granja y la tierra del
-## huerto, para que se lean como dos cosas separadas.
-const FIELD_HOUSE_GAP := 0.4
+## Comida base por m2 de campo en cada cosecha, antes del multiplicador del
+## cultivo. La granja ya no produce de forma continua: acumula esta cosecha y
+## la entrega de golpe cuando el cultivo madura (ver CROPS y _update_farms).
+const FIELD_RATE := 0.30
+## Segundos de cosecha por m2 de campo (y trabajador presente). El total se
+## limita entre HARVEST_MIN y HARVEST_MAX. Los cultivos desaparecen durante ese
+## rato, fila a fila.
+const HARVEST_PER_M2 := 1.2
+const HARVEST_MIN := 3.0
+const HARVEST_MAX := 25.0
+## Cuanto puede adelantarse el frente de cosecha a los granjeros (m). Debe ser
+## mayor que el hueco del carril (0.4) + SPREAD_DISTANCE (0.6), o el deadlock
+## vuelve: el frente no podria avanzar lo suficiente para recolocarlos.
+const HARVEST_LEAD := 1.2
+## Alcance de los granjeros mas alla de su cuerpo (m): el trigo que quitan con
+## los brazos. Sin esto nunca alcanzan el borde del fondo y la cosecha no acaba.
+const HARVEST_REACH := 0.5
+## Cada cuantos metros de avance del frente se recoloca a los granjeros (mas
+## pequeno = siguen el frente mas de cerca, a costa de mas vaiven).
+const SPREAD_DISTANCE := 0.6
+## Cuanto se mete la casa dentro de la valla del campo. La casa queda pegada al
+## borde cercano y la valla se corta justo ahi (ver FieldMesh._add_fence).
+const FIELD_OVERLAP := 0.12
 const STONE_COLOR := Color(0.58, 0.55, 0.49)   # gris arenoso: el gris neutro
 											   # se volvia azul con la luz
 											   # ambiental de primavera
 const DEMOLISH_REFUND := 0.5   # fraccion del coste que se devuelve
 
-const CROP_COLORS := {
-	"trigo": Color(0.85, 0.70, 0.25),
-	"zanahoria": Color(0.90, 0.50, 0.20),
-	"bayas": Color(0.72, 0.16, 0.18),
-}
-const CROP_NAMES := {
-	"trigo": "Trigo",
-	"zanahoria": "Zanahorias",
-	"bayas": "Bayas",
+# Cultivos que se pueden sembrar. Cada uno tiene su color, lo que tarda en
+# madurar y un multiplicador de rendimiento. La tasa sostenida de un cultivo
+# es `yield / grow_seconds`: la zanahoria da menos por cosecha pero ciclos muy
+# cortos (responde rapido en campos pequenos), las bayas tardan mas pero
+# rinden mas por cosecha (mejor tasa a largo plazo) y el trigo es el termino
+# medio.
+const CROPS := {
+	"trigo": {
+		"name": "Trigo",
+		"color": Color(0.85, 0.70, 0.25),
+		"grow_seconds": 100.0,
+		"yield": 1.0,
+	},
+	"zanahoria": {
+		"name": "Zanahorias",
+		"color": Color(0.90, 0.50, 0.20),
+		"grow_seconds": 60.0,
+		"yield": 0.55,
+	},
+	"bayas": {
+		"name": "Bayas",
+		"color": Color(0.72, 0.16, 0.18),
+		"grow_seconds": 160.0,
+		"yield": 1.9,
+	},
 }
 
 # --- Registro de tipos (BuildingDef resources) ---
@@ -83,6 +124,11 @@ var _field_crop := "trigo"
 var _field_ghost: Node3D = null
 var _field_farm: BuildingRecord = null
 var _field_yaw := 0.0
+# Zona ya delimitada y validada que espera a que la UI devuelva el cultivo
+# elegido. Mientras _field_awaiting_crop es true se ignora el input de
+# colocacion y el fantasma queda oculto (lo gestiona el popup de cultivos).
+var _field_rect_confirmed := Rect2()
+var _field_awaiting_crop := false
 # El fantasma del campo se reconstruye entero (suelo, valla y plantas) cuando
 # cambia de tamano: se limita a ~12 Hz en vez de rehacerse en cada frame. Si
 # cambia el cultivo, se rehace al momento para que el color responda.
@@ -220,15 +266,109 @@ func set_worker_efficiency(pos: Vector2, efficiency: float) -> void:
 		Economy.changed.emit()
 
 
+## Cuantos asignados han llegado de verdad al puesto (lo emite Villagers). La
+## produccion usa este numero, no el de asignados: asi el edificio empieza a
+## producir cuando los aldeanos llegan, no mientras van de camino.
+func set_workers_present(pos: Vector2, count: int) -> void:
+	var rec := _record_at(pos)
+	if rec == null:
+		return
+	var old_rate := _registered_rate(rec)
+	rec.workers_present = maxi(0, count)
+	var d := get_def(rec.type)
+	var new_rate := _registered_rate(rec)
+	if d != null and d.can_produce() and not rec.dev and not is_equal_approx(old_rate, new_rate):
+		_update_production_rate(d.prod_resource, new_rate - old_rate)
+		Economy.changed.emit()
+
+
 func _worker_production_rate(rec: BuildingRecord) -> float:
 	var d := get_def(rec.type)
 	if rec.dev or d == null or not d.can_produce():
 		return 0.0
 	# Las granjas sobreescriben prod_amount segun el tamano del campo
-	# (rec.amount) y el timer real usa ese override: el HUD debe calcular la
-	# tasa con el mismo valor o mostraria algo distinto a lo que se produce.
+	# (rec.amount) y producen por cosecha: el HUD debe calcular la tasa media
+	# con el mismo valor y el mismo ciclo o mostraria algo distinto.
+	# El factor de trabajadores es el de PRESENTES, no el de asignados.
 	var amount: float = rec.amount if rec.amount > 0.0 else d.prod_amount
-	return amount / d.prod_interval * rec.workers * rec.worker_efficiency
+	var cycle := _cycle_seconds(rec, d)
+	if cycle <= 0.0:
+		return 0.0
+	return amount / cycle * rec.workers_present * rec.worker_efficiency
+
+
+# Segundos que dura un ciclo de produccion: la maduracion del cultivo en las
+# granjas (cada cultivo la tiene distinta) y prod_interval en el resto.
+func _cycle_seconds(rec: BuildingRecord, d: BuildingDef) -> float:
+	if d.has_field:
+		return float(crop_def(rec.crop)["grow_seconds"])
+	return d.prod_interval
+
+
+# Datos de un cultivo (color, nombre, maduracion y rendimiento). Cae al trigo
+# si el id no existe o esta vacio.
+func crop_def(id: String) -> Dictionary:
+	return CROPS.get(id, CROPS["trigo"])
+
+
+# Ids de los cultivos en el orden en que se declaran en CROPS (para el menu).
+func crop_ids() -> Array:
+	return CROPS.keys()
+
+
+# Comida que da un campo de `area` m2 con el cultivo `crop_id` en cada cosecha,
+# antes de multiplicar por los trabajadores.
+func _farm_amount(area: float, crop_id: String) -> float:
+	return clampf(area * FIELD_RATE, 0.5, 15.0) * float(crop_def(crop_id)["yield"])
+
+
+## Cambia el cultivo de una granja ya sembrada sin demolerla: resiembra el campo
+## y recalcula la produccion segun el rendimiento del nuevo cultivo. Devuelve
+## false si el edificio no es una granja con campo o el cultivo no existe.
+func set_farm_crop(rec: BuildingRecord, crop_id: String) -> bool:
+	if rec == null or rec.crops == null or not is_instance_valid(rec.crops):
+		return false
+	var def := get_def(rec.type)
+	if def == null or not def.has_field or not CROPS.has(crop_id):
+		return false
+	if rec.crop == crop_id:
+		return true
+	# La tasa registrada se calcula con el cultivo y el importe ya puestos: se
+	# lee la de antes (cultivo viejo) y luego se corrige la diferencia.
+	var rate_before := _registered_rate(rec)
+	rec.crop = crop_id
+	rec.amount = _farm_amount(rec.field_area, crop_id)
+	var crop_data := crop_def(crop_id)
+	_rebuild_field(rec)
+	var rate_after := _registered_rate(rec)
+	if def.can_produce() and not rec.dev and not is_equal_approx(rate_before, rate_after):
+		_update_production_rate(def.prod_resource, rate_after - rate_before)
+	Economy.changed.emit()
+	message_requested.emit("Granja sembrada de %s" % crop_data["name"])
+	return true
+
+
+# Rehace la geometria del campo (suelo, valla y cultivos) con el cultivo actual.
+# Cambiar de cultivo cambia la malla, el tamano y la densidad de las plantas, no
+# solo el color, asi que hay que rehacer el campo y no basta con retintar.
+func _rebuild_field(rec: BuildingRecord) -> void:
+	rec.harvest = 0.0
+	rec.harvest_time = 0.0
+	rec.planting = 1.0
+	rec.spread_harvest = -1.0
+	var crop_data := crop_def(rec.crop)
+	var back := Vector2(-sin(deg_to_rad(rec.yaw)), -cos(deg_to_rad(rec.yaw)))
+	var side := Vector2(back.y, -back.x)
+	var to_house := rec.pos - rec.field_center
+	var house_local := Vector2(to_house.dot(side), to_house.dot(back))
+	if rec.field != null and is_instance_valid(rec.field):
+		rec.field.queue_free()
+	var field := FieldMesh.build(rec.field_center, rec.field_size, deg_to_rad(rec.yaw),
+		crop_data["color"], float(crop_data["grow_seconds"]), rec.crop, false,
+		Callable(), house_local, BuildingMeshes.FARM_HALF_SIDE)
+	add_child(field)
+	rec.field = field
+	rec.crops = field.get_node_or_null("CropField") as CropField
 
 
 # Tasa que el edificio aporta AHORA al "+X/s" del HUD: 0 cuando no hay turno
@@ -518,6 +658,7 @@ func demolish(rec: BuildingRecord) -> void:
 	# demas consultas ya no lo vean.
 	_placed.erase(rec)
 	_remove_from_grid(rec)
+	unregister_fence(rec.pos)
 	# Libera los nodos visuales (casita y, si es granja, el campo).
 	if rec.node != null and is_instance_valid(rec.node):
 		rec.node.queue_free()
@@ -608,6 +749,9 @@ func cancel_placement() -> void:
 
 
 func _process(delta: float) -> void:
+	# La cosecha se comprueba siempre, tambien mientras se coloca otro edificio
+	# o se delimita un campo, para que las granjas ya existentes no se paren.
+	_update_farms(delta)
 	if _field_mode:
 		_update_field_ghost(delta)
 		return
@@ -653,6 +797,10 @@ func _attach_production_timer(rec: BuildingRecord) -> void:
 	var d := get_def(rec.type)
 	if rec.dev or not d.can_produce():
 		return
+	# Las granjas no producen por timer: cosechan de golpe al madurar el cultivo
+	# (ver _update_farms). La tasa media sigue registrandose para el HUD.
+	if d.has_field:
+		return
 	var timer := Timer.new()
 	timer.name = "ProductionTimer"
 	timer.wait_time = d.prod_interval
@@ -665,14 +813,314 @@ func _attach_production_timer(rec: BuildingRecord) -> void:
 func _on_production_timer(rec: BuildingRecord) -> void:
 	if rec == null or rec.node == null or not is_instance_valid(rec.node):
 		return
-	if rec.workers <= 0:
+	# Solo produce con trabajadores que hayan llegado al puesto, no asignados.
+	if rec.workers_present <= 0:
 		return
 	# Sin turno activo (noche) los aldeanos no estan trabajando: no produce.
 	if not _shift_active:
 		return
 	var d := get_def(rec.type)
-	var amt: float = (rec.amount if rec.amount > 0.0 else d.prod_amount) * rec.workers * rec.worker_efficiency
+	var amt: float = (rec.amount if rec.amount > 0.0 else d.prod_amount) * rec.workers_present * rec.worker_efficiency
 	Economy.add(String(d.prod_resource), amt)
+
+
+# Cosecha de las granjas. El cultivo crece solo (CropField, incluso de noche);
+# cuando madura y hay trabajadores PRESENTES con turno activo, empieza la
+# cosecha: durante `_harvest_seconds()` los cultivos van desapareciendo fila a
+# fila y la comida entra poco a poco (no de golpe). Al terminar se resiembra.
+# Sin turno o sin trabajadores el cultivo espera maduro: no produce nada.
+func _update_farms(delta: float) -> void:
+	if not _shift_active:
+		return
+	for rec in _placed:
+		var d := get_def(rec.type)
+		if d == null or not d.has_field or rec.dev:
+			continue
+		if rec.crops == null or not is_instance_valid(rec.crops):
+			continue
+		# Fase de siembra (tras una cosecha): se siembra del fondo hacia la casa.
+		if rec.planting < 1.0:
+			if rec.workers_present <= 0:
+				continue
+			rec.planting = minf(1.0, rec.planting + delta / _planting_seconds(rec))
+			rec.crops.set_harvest(1.0 - rec.planting)
+			# Se recolocan cada 0.6 m de avance del frente de siembra.
+			var pfront := rec.planting * FieldMesh.outer_size(rec.field_size).y
+			if rec.spread_harvest < 0.0 or absf(pfront - rec.spread_harvest) >= SPREAD_DISTANCE:
+				rec.spread_harvest = pfront
+				work_area_changed.emit(rec.pos, rec.field_center)
+			if rec.planting >= 1.0:
+				rec.crops.begin_growth()
+			continue
+		if not rec.crops.is_mature():
+			rec.harvest = 0.0
+			# Mientras crece, los granjeros se retiran a la casa. Al madurar
+			# (spread_harvest vuelve a >=0) salen a cosechar.
+			if rec.spread_harvest >= 0.0:
+				rec.spread_harvest = -1.0
+				work_area_changed.emit(rec.pos, rec.field_center)
+			continue
+		if rec.workers_present <= 0:
+			continue
+		# El avance deseado sube por tiempo, pero no se aleja de los granjeros; y
+		# la retirada real no pasa de donde han llegado (su alcance). Asi el trigo
+		# desaparece a su lado, no por delante, y de forma progresiva.
+		var outer := FieldMesh.outer_size(rec.field_size)
+		var lead := HARVEST_LEAD / maxf(0.001, outer.y)
+		var reach := _worker_reach(rec)
+		rec.harvest_time = minf(
+			rec.harvest_time + delta / _harvest_seconds(rec),
+			minf(1.0, reach + lead))
+		var reach_arm := clampf(reach + HARVEST_REACH / maxf(0.001, outer.y), 0.0, 1.0)
+		var new_h := maxf(rec.harvest, minf(rec.harvest_time, reach_arm))
+		var applied := new_h - rec.harvest
+		rec.harvest = new_h
+		rec.crops.set_harvest(rec.harvest)
+		if applied > 0.0:
+			# La comida no entra al almacen aqui: se acumula y son los aldeanos
+			# quienes la acarrean (take_farm_food / Villager.start_carry).
+			var total := rec.amount * rec.workers_present * rec.worker_efficiency
+			rec.pending += total * applied
+		# Se recolocan cada 0.6 m de avance del frente, no por tramos fijos.
+		var front_m := rec.harvest_time * outer.y
+		if rec.spread_harvest < 0.0 or absf(front_m - rec.spread_harvest) >= SPREAD_DISTANCE:
+			rec.spread_harvest = front_m
+			work_area_changed.emit(rec.pos, rec.field_center)
+		if rec.harvest_time >= 1.0 or reach_arm >= 0.995:
+			# El avance deseado llego al fondo (o los granjeros ya estan a tiro
+			# del ultimo trozo): se remata y se resiembra.
+			if rec.harvest < 1.0:
+				var pend_total := rec.amount * rec.workers_present * rec.worker_efficiency
+				rec.pending += pend_total * (1.0 - rec.harvest)
+				rec.harvest = 1.0
+				rec.crops.set_harvest(1.0)
+			# Cosecha terminada: el campo queda pelado y empieza la siembra.
+			rec.crops.replant()
+			rec.harvest = 0.0
+			rec.harvest_time = 0.0
+			rec.planting = 0.0
+			rec.spread_harvest = -1.0
+
+
+# Cuanto tarda la cosecha: mas largo cuanto mas grande es el campo y mas corto
+# cuantos mas trabajadores (y mas eficientes) estan presentes.
+func _harvest_seconds(rec: BuildingRecord) -> float:
+	var crew := maxf(1.0, float(rec.workers_present) * maxf(0.1, rec.worker_efficiency))
+	var base := clampf(rec.field_area * HARVEST_PER_M2, HARVEST_MIN, HARVEST_MAX)
+	return base / crew
+
+
+# Cuanto tarda la siembra: como la cosecha, mas larga cuanto mas grande es el
+# campo y mas corta con mas trabajadores presentes.
+func _planting_seconds(rec: BuildingRecord) -> float:
+	return _harvest_seconds(rec)
+
+
+## Coge hasta `amount` de comida ya cosechada de la granja en `farm_pos` para que
+## un aldeano la acarree. Devuelve {} si no hay nada, no es una granja o no
+## produce. El diccionario trae {amount, target, resource}.
+func take_farm_food(farm_pos: Vector2, amount: float) -> Dictionary:
+	var rec := _record_at(farm_pos)
+	if rec == null or rec.pending <= 0.0:
+		return {}
+	var d := get_def(rec.type)
+	if d == null or not d.has_field or not d.can_produce():
+		return {}
+	# Durante la cosecha no se manda a nadie a media carga: se espera a juntar
+	# una carga completa (si no, el aldeano se iba tras 0.25 s de recogida, la
+	# cosecha se pausaba y un campo tardaba casi un dia en cosecharse una vez).
+	# Terminada la cosecha (cultivo ya res/embrado) se lleva lo que quede.
+	if rec.crops != null and is_instance_valid(rec.crops) \
+			and rec.crops.is_mature() and rec.pending < amount:
+		return {}
+	var taken := minf(amount, rec.pending)
+	if taken <= 0.0:
+		return {}
+	rec.pending -= taken
+	return {
+		"amount": taken,
+		"target": _food_storage_target(rec.pos),
+		"resource": String(d.prod_resource),
+	}
+
+
+## Los granjeros presentes avisan de donde estan para que la cosecha no se les
+## adelante (Villagers lo llama en su tick de presencia).
+func report_farm_workers(farm_pos: Vector2, positions: PackedVector2Array) -> void:
+	var rec := _record_at(farm_pos)
+	if rec != null:
+		rec.worker_positions = positions
+
+
+# Hasta donde ha llegado (0..1, del borde de la casa al fondo) el granjero mas
+# adelantado. La retirada del trigo no pasa de ahi.
+func _worker_reach(rec: BuildingRecord) -> float:
+	if rec.worker_positions.is_empty():
+		return 0.0
+	var back := Vector2(-sin(deg_to_rad(rec.yaw)), -cos(deg_to_rad(rec.yaw)))
+	var outer := FieldMesh.outer_size(rec.field_size)
+	var near := -outer.y * 0.5
+	var best := near
+	for p in rec.worker_positions:
+		best = maxf(best, (p - rec.field_center).dot(back))
+	return clampf((best - near) / maxf(0.001, outer.y), 0.0, 1.0)
+
+
+## Punto de trabajo de un granjero. Mientras el cultivo no esta listo esperan
+## dentro de la casa; cuando madura, se reparten por la franja ya recogida para
+## cosechar. Entran y salen por el hueco de la casa; nunca cruzan la valla.
+func random_field_point(farm_pos: Vector2, lane := 0) -> Vector2:
+	var rec := _record_at(farm_pos)
+	if rec == null:
+		return farm_pos
+	if rec.field_size.x <= 0.001 or rec.field_size.y <= 0.001:
+		return farm_pos
+	var back := Vector2(-sin(deg_to_rad(rec.yaw)), -cos(deg_to_rad(rec.yaw)))
+	var side := Vector2(back.y, -back.x)
+	var outer := FieldMesh.outer_size(rec.field_size)
+	var hz := outer.y * 0.5
+	# Carril estable segun el indice (proporcion aurea): cada aldeano mantiene
+	# su columna y avanza recto al cosechar/sembrar.
+	var lane_u := fmod(float(lane) * 0.6180339887 + 0.5, 1.0) * 0.9 - 0.45
+	var u := lane_u * rec.field_size.x
+	# Fase de siembra: sobre la tierra aun sin sembrar, avanzando del fondo
+	# (+z) hacia la casa (-z).
+	if rec.planting < 1.0:
+		var front_p := hz - rec.planting * outer.y
+		var vp := clampf(randf_range(front_p - 1.3, front_p - 0.15), -hz, hz)
+		return rec.field_center + side * u + back * vp
+	# Aun creciendo: se quedan en la casa (no pisan el cultivo ni la valla).
+	if rec.crops == null or not rec.crops.is_mature():
+		return rec.pos + Vector2(randf_range(-0.15, 0.15), randf_range(-0.15, 0.15))
+	# Cosechando: justo detras del frente deseado (que va algo por delante de la
+	# retirada real), para que quiten el trigo a su lado. Banda estrecha.
+	var front := -hz + rec.harvest_time * outer.y
+	var v := clampf(randf_range(front - 0.4, front - 0.1), -hz + 0.1, hz)
+	return rec.field_center + side * u + back * v
+
+
+# --- Vallas del campo: bloqueo real de paso ---
+# El NavigationObstacle3D solo "empuja" (evitacion blanda), asi que los aldeanos
+# seguian cruzando la valla. Este registro estatico permite a Villager consultar
+# si un paso cruza la valla de algun campo y deslizarse a lo largo. Clave: la
+# posicion de la casa (unica por granja).
+static var _fences: Dictionary = {}
+
+
+static func register_fence(pos: Vector2, center: Vector2, side: Vector2, back: Vector2,
+		hx: float, hz: float, gap0: float, gap1: float) -> void:
+	_fences[pos] = {
+		"center": center, "side": side, "back": back,
+		"hx": hx, "hz": hz, "gap0": gap0, "gap1": gap1,
+	}
+
+
+static func unregister_fence(pos: Vector2) -> void:
+	_fences.erase(pos)
+
+
+## Normal (mundo) de la primera valla que cruza el paso `from`->`to`, o
+## Vector2.ZERO si no cruza ninguna o cruza por el hueco de la casa.
+static func fence_block_normal(from: Vector2, to: Vector2) -> Vector2:
+	for key in _fences:
+		var n := _fence_cross_normal(_fences[key], from, to)
+		if n != Vector2.ZERO:
+			return n
+	return Vector2.ZERO
+
+
+static func _fence_cross_normal(f: Dictionary, from: Vector2, to: Vector2) -> Vector2:
+	var center: Vector2 = f["center"]
+	var side: Vector2 = f["side"]
+	var back: Vector2 = f["back"]
+	var hx: float = f["hx"]
+	var hz: float = f["hz"]
+	var a := Vector2((from - center).dot(side), (from - center).dot(back))
+	var b := Vector2((to - center).dot(side), (to - center).dot(back))
+	# Bordes x = +-hx (normal +-side).
+	var ex_pos := hx
+	if (a.x - ex_pos) * (b.x - ex_pos) < 0.0:
+		var t := (ex_pos - a.x) / (b.x - a.x)
+		var zc := a.y + t * (b.y - a.y)
+		if zc > -hz and zc < hz:
+			return side
+	var ex_neg := -hx
+	if (a.x - ex_neg) * (b.x - ex_neg) < 0.0:
+		var t2 := (ex_neg - a.x) / (b.x - a.x)
+		var zc2 := a.y + t2 * (b.y - a.y)
+		if zc2 > -hz and zc2 < hz:
+			return -side
+	# Bordes z = +-hz (normal +-back). El lado cercano (z=-hz) tiene el hueco.
+	var ez_pos := hz
+	if (a.y - ez_pos) * (b.y - ez_pos) < 0.0:
+		var t3 := (ez_pos - a.y) / (b.y - a.y)
+		var xc := a.x + t3 * (b.x - a.x)
+		if xc > -hx and xc < hx:
+			return back
+	var ez_neg := -hz
+	if (a.y - ez_neg) * (b.y - ez_neg) < 0.0:
+		var t4 := (ez_neg - a.y) / (b.y - a.y)
+		var xc2 := a.x + t4 * (b.x - a.x)
+		if xc2 > -hx and xc2 < hx:
+			if xc2 > f["gap0"] and xc2 < f["gap1"]:
+				return Vector2.ZERO
+			return -back
+	return Vector2.ZERO
+
+
+## Campo (valla) que contiene el punto, o {} si esta fuera de todos.
+static func field_at(p: Vector2) -> Dictionary:
+	for key in _fences:
+		var f: Dictionary = _fences[key]
+		var d := p - (f["center"] as Vector2)
+		if absf(d.dot(f["side"])) <= float(f["hx"]) \
+				and absf(d.dot(f["back"])) <= float(f["hz"]):
+			return f
+	return {}
+
+
+## Puntos de paso para entrar o salir de un campo por el hueco de la casa: van
+## de fuera a dentro (o al reves), de modo que el cruce de la valla ocurre
+## siempre dentro del hueco y no en una esquina. Devuelve [] si no hace falta.
+static func gap_route(from: Vector2, to: Vector2) -> Array:
+	var f_from := field_at(from)
+	var f_to := field_at(to)
+	if not f_from.is_empty() and not f_to.is_empty():
+		return []
+	var entering := f_from.is_empty() and not f_to.is_empty()
+	var f: Dictionary = f_to if entering else f_from
+	if f.is_empty():
+		return []
+	var center: Vector2 = f["center"]
+	var side: Vector2 = f["side"]
+	var back: Vector2 = f["back"]
+	var hz: float = f["hz"]
+	var gx := (float(f["gap0"]) + float(f["gap1"])) * 0.5
+	# La casa queda centrada en el hueco. Se pasa por DELANTE (fachada, +Z de la
+	# casa) y luego por dentro del campo: asi cruza la casa por la puerta y no
+	# por una pared lateral.
+	var house_back := BuildingMeshes.FARM_HALF_BACK
+	var house_cz := -(house_back - FIELD_OVERLAP + hz)   # centro de la casa (z local)
+	var front_z := house_cz - (house_back + 0.5)
+	var inside_z := -hz + 0.4
+	var front := center + side * gx + back * front_z
+	var inside := center + side * gx + back * inside_z
+	return [front, inside] if entering else [inside, front]
+
+
+# Almacen de comida (granero) mas cercano a `from`; si no hay ninguno, la propia
+# granja (la comida acaba igualmente en el almacen del pueblo).
+func _food_storage_target(from: Vector2) -> Vector2:
+	var best := from
+	var best_d := INF
+	for rec in _placed:
+		var d := get_def(rec.type)
+		if d != null and d.storage_kind == &"granary":
+			var dist := rec.pos.distance_squared_to(from)
+			if dist < best_d:
+				best_d = dist
+				best = rec.pos
+	return best
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -680,23 +1128,14 @@ func _unhandled_input(event: InputEvent) -> void:
 	# sigue activo y las conversiones pantalla->suelo serian null derefs.
 	if _cam_rig == null:
 		return
+	# Mientras se elige el cultivo manda el popup: Buildings no procesa nada.
+	if _field_awaiting_crop:
+		return
 	# Mientras se pintan caminos o se colocan puentes, Buildings no procesa la
 	# colocacion.
 	if Paths.instance != null and Paths.instance.is_placing():
 		return
 	if Bridges.instance != null and Bridges.instance.is_placing():
-		return
-	if event.is_action_pressed("select_building_1") and _field_mode:
-		_field_crop = "trigo"
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed("select_building_2") and _field_mode:
-		_field_crop = "zanahoria"
-		get_viewport().set_input_as_handled()
-		return
-	if event.is_action_pressed("select_building_3") and _field_mode:
-		_field_crop = "bayas"
-		get_viewport().set_input_as_handled()
 		return
 	if event.is_action_pressed("cancel"):
 		if _field_mode:
@@ -807,10 +1246,14 @@ func _place() -> void:
 	var body := BuildingMeshes.build(_pending, null)
 	body.rotation = Vector3(0.0, deg_to_rad(_yaw), 0.0)
 	node.add_child(body)
-	var obstacle := NavigationObstacle3D.new()
-	obstacle.radius = d.footprint * 0.5
-	obstacle.height = 2.5
-	node.add_child(obstacle)
+	# La granja no lleva obstaculo en la casita: es el paso hacia el campo (los
+	# aldeanos entran por delante y salen por la puerta trasera). El resto de
+	# edificios si bloquean.
+	if not d.has_field:
+		var obstacle := NavigationObstacle3D.new()
+		obstacle.radius = d.footprint * 0.5
+		obstacle.height = 2.5
+		node.add_child(obstacle)
 	add_child(node)
 	var rec := BuildingRecord.new(_pending, ground, _yaw, node, dev_free_build)
 	_placed.append(rec)
@@ -836,7 +1279,7 @@ func _place() -> void:
 		_field_ghost = Node3D.new()
 		add_child(_field_ghost)
 		_ghost.visible = false
-		message_requested.emit("Elige la zona con el raton (clic) y el cultivo: 1 Trigo, 2 Zanahorias, 3 Bayas")
+		message_requested.emit("Delimita la zona del campo con el raton (clic). Despues elegiras el cultivo.")
 		return
 	cancel_placement()
 
@@ -846,17 +1289,11 @@ func _field_back() -> Vector2:
 	return Vector2(-sin(deg_to_rad(_field_yaw)), -cos(deg_to_rad(_field_yaw)))
 
 
-# Cuanto hay que separar el borde sembrado del centro de la casa para que la
-# casa quede fuera del huerto por completo.
-#
-# FieldMesh rodea los cultivos de tierra desnuda y redondea a celdas enteras.
-# El margen mantiene la casa fuera del huerto.
-func _field_offset(d: BuildingDef, back: Vector2) -> float:
-	var house_reach := d.footprint * 0.5 * (absf(back.x) + absf(back.y))
-	# FieldMesh rodea los cultivos de tierra desnuda y redondea a celdas
-	# enteras, asi que por cada lado puede crecer hasta MARGIN + CELL/2.
-	var soil_pad := FieldMesh.MARGIN + FieldMesh.CELL * 0.5
-	return house_reach + soil_pad + FIELD_HOUSE_GAP
+# Distancia del centro de la casa al origen del arrastre del campo. Deja el
+# origen a ras del borde cercano de la valla; luego FieldMesh alinea el campo
+# con la casa para que la toque (ver _field_center).
+func _field_offset(_d: BuildingDef, _back: Vector2) -> float:
+	return BuildingMeshes.FARM_HALF_BACK - FIELD_OVERLAP
 
 
 # Zona sembrada que se esta delimitando, EN COORDENADAS DE LA GRANJA: x a lo
@@ -881,35 +1318,105 @@ func _field_rect(ground: Vector2) -> Rect2:
 	return Rect2(Vector2(u0, 0.0), Vector2(u1 - u0, depth))
 
 
-# Centro en el mundo de una zona sembrada dada en coordenadas de la granja.
+# Centro en el mundo del campo, alineado con la casa: el borde cercano de la
+# valla queda a FARM_HALF_BACK - FIELD_OVERLAP del centro de la casa, de modo
+# que la casa siempre esta pegada (y un poco metida) en la valla, con
+# independencia del redondeo a celdas del suelo.
 func _field_center(rect: Rect2) -> Vector2:
 	var back := _field_back()
 	var side := Vector2(back.y, -back.x)
-	return _field_start 		+ side * (rect.position.x + rect.size.x * 0.5) 		+ back * (rect.position.y + rect.size.y * 0.5)
+	var outer := FieldMesh.outer_size(rect.size)
+	var spread_center := rect.position.x + rect.size.x * 0.5
+	return _field_farm.pos + side * spread_center \
+		+ back * (BuildingMeshes.FARM_HALF_BACK - FIELD_OVERLAP + outer.y * 0.5)
 
 
 func _confirm_field() -> void:
 	var ground: Vector2 = _cam_rig.screen_to_ground(get_viewport().get_mouse_position())
 	var rect := _field_rect(ground)
-	var w := rect.size.x
-	var d := rect.size.y
-	if w * d > FIELD_MAX_AREA:
+	if rect.size.x * rect.size.y > FIELD_MAX_AREA:
 		message_requested.emit("Zona demasiado grande (max %0.0f m2)" % FIELD_MAX_AREA)
 		return
 	if not _field_terrain_ok(rect):
 		message_requested.emit("Los cultivos necesitan llanura")
 		return
+	# La zona es valida: se guarda y se pide a la UI que elija el cultivo. El
+	# campo no se siembra hasta que la UI llame a choose_field_crop().
+	_field_rect_confirmed = rect
+	_field_awaiting_crop = true
+	if _field_ghost != null:
+		_field_ghost.visible = false
+	# El menu sale anclado a la granja: se pasa su posicion de mundo para que la
+	# UI la reproyecte (y siga al edificio si se mueve la camara).
+	var house := _field_farm.pos
+	crop_select_requested.emit(crop_options(),
+		Vector3(house.x, Terrain.height_at(house), house.y))
+
+
+## La UI llama aqui con el cultivo elegido: siembra el campo ya delimitado y
+## cierra el modo de dos pasos.
+func choose_field_crop(crop_id: String) -> void:
+	if not _field_awaiting_crop or not CROPS.has(crop_id):
+		return
+	_field_crop = crop_id
+	_plant_confirmed_field(_field_rect_confirmed)
+	_field_awaiting_crop = false
+	_end_field_mode()
+
+
+## La UI llama aqui si el jugador cancela la eleccion de cultivo: se vuelve a
+## permitir delimitar la zona sin perder la granja ya colocada.
+func cancel_field_crop_selection() -> void:
+	if not _field_awaiting_crop:
+		return
+	_field_awaiting_crop = false
+	if _field_ghost != null:
+		_field_ghost.visible = true
+	message_requested.emit("Delimita la zona del campo con el raton (clic)")
+
+
+## Opciones de cultivo para el popup de la UI.
+func crop_options() -> Array:
+	var out := []
+	for id in CROPS:
+		var c: Dictionary = CROPS[id]
+		out.append({"id": String(id), "name": c["name"], "color": c["color"]})
+	return out
+
+
+# Siembra y registra el campo confirmado con el cultivo ya elegido (_field_crop).
+func _plant_confirmed_field(rect: Rect2) -> void:
+	var w := rect.size.x
+	var d := rect.size.y
 	var center := _field_center(rect)
-	var crop_color: Color = CROP_COLORS[_field_crop]
-	var field := FieldMesh.build(center, rect.size, deg_to_rad(_field_yaw), crop_color, false)
+	var outer := FieldMesh.outer_size(rect.size)
+	# Centro de la casa en coordenadas del campo, para abrir la valla justo
+	# donde la toca. Por construccion de _field_center, el borde cercano queda a
+	# FARM_HALF_BACK - FIELD_OVERLAP del centro de la casa.
+	var house_local := Vector2(
+		-(rect.position.x + rect.size.x * 0.5),
+		-(BuildingMeshes.FARM_HALF_BACK - FIELD_OVERLAP + outer.y * 0.5))
+	var crop_data := crop_def(_field_crop)
+	var field := FieldMesh.build(center, rect.size, deg_to_rad(_field_yaw),
+		crop_data["color"], float(crop_data["grow_seconds"]), _field_crop, false,
+		Callable(), house_local, BuildingMeshes.FARM_HALF_SIDE)
 	# El campo va suelto en el mundo, no colgado de la casita. Se guarda la
 	# referencia en el record para que demolish() lo libere con ella.
 	add_child(field)
-	var field_obstacle := NavigationObstacle3D.new()
-	field_obstacle.radius = rect.size.length() * 0.5
-	field_obstacle.height = 0.6
-	field.add_child(field_obstacle)
 	_field_farm.field = field
+	_field_farm.crops = field.get_node_or_null("CropField") as CropField
+	# El campo empieza sembrado por los granjeros, como al res sembrar: sin
+	# brotes y con la fase de siembra activa (del fondo hacia la casa).
+	_field_farm.planting = 0.0
+	if _field_farm.crops != null:
+		_field_farm.crops.replant()
+	# Se fijan centro y tamano antes de avisar a los trabajadores: su punto de
+	# trabajo (fase de siembra) los calcula.
+	_field_farm.field_center = center
+	_field_farm.field_size = rect.size
+	# Los trabajadores pasan a trabajar en el campo (no en la casita): alli se
+	# les vera sembrar y cosechar.
+	work_area_changed.emit(_field_farm.pos, center)
 	# Caja envolvente del campo, para poder clicar en cualquier parte de el y
 	# seleccionar la granja. Ahora el campo puede estar girado, asi que se
 	# calcula desde sus cuatro esquinas y no desde el rectangulo en ejes de
@@ -918,9 +1425,17 @@ func _confirm_field() -> void:
 	# margen de tierra y redondea a celdas. El AABB guardado debe cubrirlo, no
 	# solo la zona sembrada, o la seleccion y la validacion de colocacion se
 	# quedan cortas por la valla.
-	var outer := FieldMesh.outer_size(rect.size)
 	var back := _field_back()
 	var side := Vector2(back.y, -back.x)
+	# Registra la valla (bloqueo real de paso) con el hueco de la casa.
+	var fence_hx := outer.x * 0.5
+	var fence_hz := outer.y * 0.5
+	# El hueco de paso es algo mas ancho que la puerta para que no se enganchen
+	# en las esquinas al entrar/salir.
+	var gap_half := BuildingMeshes.FARM_HALF_SIDE + 0.25
+	register_fence(_field_farm.pos, center, side, back, fence_hx, fence_hz,
+		clampf(house_local.x - gap_half, -fence_hx, fence_hx),
+		clampf(house_local.x + gap_half, -fence_hx, fence_hx))
 	var fmin := Vector2(INF, INF)
 	var fmax := Vector2(-INF, -INF)
 	for sx: float in [-1.0, 1.0]:
@@ -935,21 +1450,25 @@ func _confirm_field() -> void:
 	_add_to_grid(_field_farm)
 	# Radio que cubre el campo entero incluidas las esquinas.
 	place_clear_requested.emit(center, rect.size.length() * 0.5 + 1.0)
-	# La produccion de la granja depende del tamano del campo (rec.amount), y
-	# el timer real ya la usa. Si se cambio el override, hay que corregir la
-	# tasa registrada en Economy para que el HUD no muestre otra cosa.
+	# La produccion de la granja depende del tamano del campo (rec.amount) y del
+	# rendimiento del cultivo. Hay que fijar el cultivo ANTES de recalcular la
+	# tasa: _cycle_seconds usa su tiempo de maduracion, y si no el HUD mostraria
+	# la tasa calculada con el ciclo del trigo para cualquier cultivo.
+	_field_farm.crop = _field_crop
+	_field_farm.field_area = w * d
+	_field_farm.field_center = center
+	_field_farm.field_size = rect.size
+	_field_farm.spread_harvest = -1.0
 	var def := get_def(_field_farm.type)
 	var rate_before := _registered_rate(_field_farm)
-	_field_farm.amount = clampf(w * d * FIELD_RATE, 0.5, 8.0)
+	_field_farm.amount = _farm_amount(_field_farm.field_area, _field_crop)
 	var rate_after := _registered_rate(_field_farm)
 	if def != null and def.can_produce() and not _field_farm.dev \
 			and not is_equal_approx(rate_before, rate_after):
 		_update_production_rate(def.prod_resource, rate_after - rate_before)
-	_field_farm.crop = _field_crop
 	Economy.changed.emit()
-	var crop_name: String = CROP_NAMES[_field_crop]
+	var crop_name: String = crop_data["name"]
 	message_requested.emit("Campo de %d m2 sembrado de %s" % [int(round(w * d)), crop_name])
-	_end_field_mode()
 
 
 func _cancel_field() -> void:
@@ -981,6 +1500,7 @@ func _cancel_field() -> void:
 
 func _end_field_mode() -> void:
 	_field_mode = false
+	_field_awaiting_crop = false
 	if _field_ghost != null:
 		_field_ghost.queue_free()
 		_field_ghost = null
@@ -990,7 +1510,8 @@ func _end_field_mode() -> void:
 
 
 func _update_field_ghost(delta: float) -> void:
-	if _field_ghost == null:
+	# Con el popup de cultivo abierto no se redibuja ni se sigue el raton.
+	if _field_ghost == null or _field_awaiting_crop:
 		return
 	# Reconstruir el campo entero (suelo + valla + plantas) es caro: se agrupa
 	# a ~12 Hz. Un cambio de cultivo fuerza el rehacer inmediato (color).
@@ -1004,13 +1525,15 @@ func _update_field_ghost(delta: float) -> void:
 	for c in _field_ghost.get_children():
 		_field_ghost.remove_child(c)
 		c.queue_free()
-	var crop_color: Color = CROP_COLORS[_field_crop]
+	var crop_data := crop_def(_field_crop)
+	var crop_color: Color = crop_data["color"]
 	if _field_valid(rect):
 		crop_color.a = 0.55
 	else:
 		crop_color = Color(1.0, 0.3, 0.3, 0.4)
 	_field_ghost.add_child(
-		FieldMesh.build(_field_center(rect), rect.size, deg_to_rad(_field_yaw), crop_color, true))
+		FieldMesh.build(_field_center(rect), rect.size, deg_to_rad(_field_yaw),
+			crop_color, float(crop_data["grow_seconds"]), _field_crop, true))
 
 
 func _field_valid(rect: Rect2) -> bool:
@@ -1019,15 +1542,18 @@ func _field_valid(rect: Rect2) -> bool:
 	return _field_terrain_ok(rect)
 
 
-# Muestrea la zona sembrada metro a metro, en los ejes de la granja.
+# Muestrea metro a metro el campo fisico (el que ocupan suelo y valla), que es
+# lo que tiene que ser llanura, centrado donde se plantara.
 func _field_terrain_ok(rect: Rect2) -> bool:
+	var outer := FieldMesh.outer_size(rect.size)
+	var center := _field_center(rect)
 	var back := _field_back()
 	var side := Vector2(back.y, -back.x)
-	var v := rect.position.y
-	while v <= rect.end.y:
-		var u := rect.position.x
-		while u <= rect.end.x:
-			if Terrain.terrain_type(_field_start + side * u + back * v) != "llanura":
+	var v := -outer.y * 0.5
+	while v <= outer.y * 0.5 + 0.001:
+		var u := -outer.x * 0.5
+		while u <= outer.x * 0.5 + 0.001:
+			if Terrain.terrain_type(center + side * u + back * v) != "llanura":
 				return false
 			u += 1.0
 		v += 1.0

@@ -80,6 +80,12 @@ const FARM_WALL_HX := 0.34    # medio ancho del muro (X)
 const FARM_WALL_HZ := 0.40    # medio largo del muro (Z); el caballete va en Z
 const FARM_PLINTH_H := 0.12
 const FARM_WALL_H := 0.56
+# Media huella VISUAL de la casa de labranza (el tejado vuela por fuera del
+# muro). Se usa para pegar el campo a la casa y abrir la valla justo donde la
+# toca. BACK es hacia el huerto (eje Z local, el lado largo del tejado); SIDE es
+# el ancho (eje X local). No coincide con el footprint (redondeado a 1.0).
+const FARM_HALF_BACK := 0.60
+const FARM_HALF_SIDE := 0.50
 
 
 # Casa de labranza con techo de paja. Lo que manda es el tejado: grueso,
@@ -133,6 +139,13 @@ static func farm(mat: Material) -> Node3D:
 	n.add_child(_part(frame, timber, Vector3(0, FARM_PLINTH_H + 0.19, FARM_WALL_HZ + 0.01)))
 	var door := _box(Vector3(0.22, 0.32, 0.05))
 	n.add_child(_part(door, door_mat, Vector3(0, FARM_PLINTH_H + 0.16, FARM_WALL_HZ + 0.02)))
+
+	# Puerta trasera, hacia el huerto (el campo queda en -Z): es por donde los
+	# aldeanos salen al campo desde la casa.
+	var back_frame := _box(Vector3(0.30, 0.38, 0.04))
+	n.add_child(_part(back_frame, timber, Vector3(0, FARM_PLINTH_H + 0.19, -(FARM_WALL_HZ + 0.01))))
+	var back_door := _box(Vector3(0.22, 0.32, 0.05))
+	n.add_child(_part(back_door, door_mat, Vector3(0, FARM_PLINTH_H + 0.16, -(FARM_WALL_HZ + 0.02))))
 
 	# Ventanita en un costado.
 	var win := _box(Vector3(0.04, 0.16, 0.18))

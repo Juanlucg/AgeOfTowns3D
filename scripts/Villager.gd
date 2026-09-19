@@ -24,6 +24,11 @@ const MAX_PATH_HOPS := 40
 ## hacia en cada frame mientras el aldeano seguia bloqueado, disparando 8
 ## muestras de terreno + un plan de camino por frame y aldeano.
 const BLOCKED_RETRY := 0.25
+## Radio (m) al que hay que llegar al puesto para contar como presente. El
+## aldeano deambula en 0.5-1.0 m alrededor de work_position.
+const WORK_ARRIVAL := 1.6
+## Comida que puede acarrear un granjero en cada viaje al almacen.
+const CARRY_CAPACITY := 5.0
 
 var home_position := Vector2.ZERO
 var home_door_position := Vector2.ZERO
@@ -38,6 +43,12 @@ var has_gathering := false
 var shelter_position := Vector2.ZERO
 var has_shelter := false
 var work_position := Vector2.ZERO
+## Posicion del EDIFICIO donde trabaja (clave del grupo). No cambia aunque el
+## punto de deambulacion (work_position) sea el campo de una granja.
+var work_key := Vector2.ZERO
+## Carril fijo del aldeano en el campo (0..4095): reparte a los granjeros en
+## columnas estables para que avancen recto al cosechar/sembrar.
+var work_lane := 0
 var work_name := ""
 var display_name := "Aldeano"
 var hunger := 0.0
@@ -56,15 +67,25 @@ var _destination := Vector2.ZERO
 var _follow_stroke: Dictionary = {}
 ## Objetivos intermedios seguidos en el trayecto actual (tope de seguridad).
 var _path_hops := 0
+## Puntos de paso pendientes (hueco de la valla de un campo).
+var _queue: Array[Vector2] = []
 var _wait_time := 0.0
 var _blocked_cooldown := 0.0
 var _visual: Node3D
 var _shirt_material: StandardMaterial3D
 var _walk_phase := 0.0
+var _pick_phase := 0.0
 var _navigation_agent: NavigationAgent3D
+## Acarreo: cuando un granjero recoge comida en el campo la lleva al almacen.
+## Mientras lleva carga, su destino es el almacen y entrega al llegar.
+var _carrying := false
+var carry_amount := 0.0
+var carry_resource := "comida"
+var _carry_visual: Node3D = null
 
 
 func initialize(home: Vector2, spawn_offset: Vector2, door_offset := Vector2.ZERO, housed := false) -> void:
+	work_lane = randi() % 4096
 	home_position = home
 	home_door_position = home + door_offset
 	if door_offset.length_squared() > 0.001:
@@ -140,16 +161,67 @@ func add_happiness(amount: float) -> void:
 	_update_visual_state()
 
 
-func assign_work(work: Vector2, display_name: String) -> void:
+## `work` es el punto donde deambula (para las granjas, un punto del campo) y
+## `key` la posicion del edificio al que pertenece (por defecto, la misma).
+func assign_work(work: Vector2, display_name: String, key: Vector2 = Vector2.INF) -> void:
 	work_position = work
+	work_key = work if key == Vector2.INF else key
 	work_name = display_name
 	_choose_target()
 
 
 func clear_work() -> void:
 	work_position = Vector2.ZERO
+	work_key = Vector2.ZERO
 	work_name = ""
 	_at_work = false
+	_choose_target()
+
+
+## Cambia el punto de trabajo sin cambiar de oficio (una granja pasa a trabajar
+## en el centro del campo). Si esta en jornada, se redirige ya.
+func set_work_spot(spot: Vector2) -> void:
+	work_position = spot
+	# No se cambia el destino si va cargando: sigue hacia el almacen.
+	if _at_work and not _carrying:
+		_choose_target()
+
+
+func is_carrying() -> bool:
+	return _carrying
+
+
+## Cuanto puede llevar de una vez (lo consulta Villagers al darle una carga).
+func carry_capacity() -> float:
+	return CARRY_CAPACITY
+
+
+## Recoge una carga ya cosechada y va a dejarla al almacen (`target`). Mientras
+## la lleva, se le ve un cajon y no cuenta como presente en el puesto.
+func start_carry(target: Vector2, amount: float, resource: String) -> void:
+	if _carrying or amount <= 0.0:
+		return
+	_carrying = true
+	carry_amount = amount
+	carry_resource = resource
+	if _carry_visual != null:
+		_carry_visual.visible = true
+	# Sale hacia el almacen sin esperar a terminar la pausa actual.
+	_wait_time = 0.0
+	_destination = target
+	_follow_stroke = {}
+	_path_hops = 0
+	_route_or_direct()
+
+
+# Entrega la carga en el almacen y vuelve al puesto de trabajo.
+func _deliver() -> void:
+	Economy.add(carry_resource, carry_amount)
+	carry_amount = 0.0
+	_carrying = false
+	if _carry_visual != null:
+		_carry_visual.visible = false
+	_wait_time = randf_range(0.3, 0.8)
 	_choose_target()
 
 
@@ -211,6 +283,16 @@ func is_working() -> bool:
 	return work_name != ""
 
 
+## True si esta en la jornada de trabajo Y ha llegado ya al puesto (esta a
+## WORK_ARRIVAL o menos de el). Es lo que usa Villagers para no dar por
+## trabajando a quien aun va de camino.
+func is_at_work() -> bool:
+	if not _at_work:
+		return false
+	var p := Vector2(global_position.x, global_position.z)
+	return p.distance_to(work_position) <= WORK_ARRIVAL
+
+
 func efficiency() -> float:
 	return clampf((health / 100.0) * (happiness / 100.0), 0.0, 1.0)
 
@@ -269,7 +351,16 @@ func _process(delta: float) -> void:
 
 	if _wait_time > 0.0:
 		_wait_time -= delta
+		# Quieto en el puesto: gesto de agacharse a recoger (sembrar/cosechar).
+		if _visual != null:
+			if _at_work and not _stay_home():
+				_pick_phase += delta * 7.0
+				_visual.rotation.x = deg_to_rad(30.0) * maxf(0.0, sin(_pick_phase))
+			else:
+				_visual.rotation.x = 0.0
 		return
+	if _visual != null and _visual.rotation.x != 0.0:
+		_visual.rotation.x = 0.0
 
 	var arrive := ARRIVAL_DISTANCE if _follow_stroke.is_empty() else PATH_WAYPOINT_DISTANCE
 	var distance := current.distance_to(_target)
@@ -316,6 +407,12 @@ func _process(delta: float) -> void:
 			if current.distance_squared_to(entry) > 0.0001:
 				direction = current.direction_to(entry)
 	var next := current + direction * speed * delta
+	# Las vallas del campo no se atraviesan: si el paso cruza una, se desliza a
+	# lo largo de ella (el hueco de la casa si deja pasar).
+	next = _avoid_fences(current, next, direction, speed * delta)
+	if next.distance_squared_to(current) < 0.000001:
+		return
+	direction = current.direction_to(next)
 	var on_bridge_next := Bridges.instance != null and Bridges.instance.is_bridge(next, BRIDGE_TOL)
 	# La guarda de agua no cancela un cruce valido por el puente (con tolerancia
 	# para no atascarse si el punto de navegacion cae justo fuera del tablero).
@@ -342,6 +439,27 @@ func _process(delta: float) -> void:
 	_visual.position.y = 0.02 + sin(_walk_phase) * 0.015
 
 
+# Si el paso `current`->`next` cruza una valla de campo, devuelve el punto
+# deslizado a lo largo de la valla (o `current` si no hay salida).
+func _avoid_fences(current: Vector2, next: Vector2, direction: Vector2, step: float) -> Vector2:
+	var normal := Buildings.fence_block_normal(current, next)
+	if normal == Vector2.ZERO:
+		return next
+	var slide := direction - normal * direction.dot(normal)
+	if slide.length_squared() < 0.0001:
+		# De frente contra la valla: se elige el tangente que mas acerque al
+		# destino para ir bordeandola en vez de quedarse clavado.
+		var tangent := Vector2(-normal.y, normal.x)
+		if tangent.dot(current.direction_to(_destination)) < 0.0:
+			tangent = -tangent
+		slide = tangent
+	slide = slide.normalized()
+	var alt := current + slide * step
+	if Buildings.fence_block_normal(current, alt) != Vector2.ZERO:
+		return current
+	return alt
+
+
 func _choose_target() -> void:
 	_destination = _next_destination()
 	_follow_stroke = {}
@@ -351,6 +469,28 @@ func _choose_target() -> void:
 
 # Ir al destino en directo si no hay un camino razonable que ayude.
 func _route_or_direct() -> void:
+	var current := Vector2(global_position.x, global_position.z)
+	# Si hay que entrar o salir de un campo, manda el paso por el hueco de la
+	# casa (no se sigue un camino que pueda cruzar la valla). Son dos puntos de
+	# paso, por fuera y por dentro, para que el cruce caiga en el hueco.
+	var route := Buildings.gap_route(current, _destination)
+	if not route.is_empty():
+		_follow_stroke = {}
+		_path_hops = 0
+		_queue.clear()
+		for p: Vector2 in route:
+			_queue.append(p)
+		_target = _queue.pop_front()
+		_set_navigation_target()
+		return
+	_queue.clear()
+	# Trabajando: va directo al puesto. Sin esto se enganchaba a un camino
+	# cercano y se daba un paseo por la carretera en vez de quedarse.
+	if _at_work and not _carrying:
+		_follow_stroke = {}
+		_target = _destination
+		_set_navigation_target()
+		return
 	if _route_via_path():
 		return
 	_target = _destination
@@ -360,8 +500,8 @@ func _route_or_direct() -> void:
 # Destino final del modo actual: trabajo, casa/hoguera o deambulacion.
 func _next_destination() -> Vector2:
 	if _at_work:
-		var angle := randf_range(0.0, TAU)
-		return work_position + Vector2(cos(angle), sin(angle)) * randf_range(0.5, 1.0)
+		# Sin deambular: se queda en su puesto y hace el gesto de trabajar.
+		return work_position
 	if _stay_home():
 		# Descanso o comida: casa o hoguera.
 		return _rest_target()
@@ -410,6 +550,15 @@ func _route_via_path() -> bool:
 # Al alcanzar el objetivo actual: si era un punto intermedio del camino y este
 # sigue siendo util, avanza al siguiente; si es el destino, cierra el trayecto.
 func _on_target_reached() -> void:
+	# Acarreando: al llegar al almacen (destino final) se entrega la carga.
+	if _carrying and _target.distance_squared_to(_destination) <= 0.0001:
+		_deliver()
+		return
+	# Quedan puntos de paso (hueco de la valla): va al siguiente.
+	if not _queue.is_empty():
+		_target = _queue.pop_front()
+		_set_navigation_target()
+		return
 	# Destino final: no seguir enganchando caminos (evita dar vueltas al llegar).
 	if _target.distance_squared_to(_destination) <= 0.0001:
 		_follow_stroke = {}
@@ -494,6 +643,19 @@ func _build_visual() -> void:
 	_add_part(_mesh_hair, _mat_hair, Vector3(0, 0.73, 0))
 	_add_part(_mesh_leg, _mat_trousers, Vector3(-0.07, 0.08, 0))
 	_add_part(_mesh_leg, _mat_trousers, Vector3(0.07, 0.08, 0))
+
+	# Cajon de acarreo: oculto hasta que el aldeano lleva una carga de comida.
+	var crate := BoxMesh.new()
+	crate.size = Vector3(0.30, 0.24, 0.30)
+	var crate_mi := MeshInstance3D.new()
+	crate_mi.mesh = crate
+	crate_mi.material_override = _make_material(Color(0.72, 0.52, 0.28))
+	_carry_visual = Node3D.new()
+	_carry_visual.add_child(crate_mi)
+	_carry_visual.position = Vector3(0.0, 0.50, 0.16)
+	_carry_visual.visible = false
+	_visual.add_child(_carry_visual)
+
 	_update_visual_state()
 
 

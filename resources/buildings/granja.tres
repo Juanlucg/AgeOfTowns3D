@@ -6,7 +6,7 @@
 script = ExtResource("1_def")
 id = &"granja"
 display_name = "Granja"
-description = "Casita de campo con una parcela cultivable. Produce comida segun el tamano del campo."
+description = "Casita de campo con una parcela cultivable. La cosecha de comida depende del tamano del campo y del cultivo elegido: la zanahoria crece rapido, las bayas tardan pero rinden mas."
 cost = {
 "madera": 25.0
 }

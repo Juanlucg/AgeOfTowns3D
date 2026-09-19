@@ -20,6 +20,9 @@ signal message_requested(text: String)
 signal defeat_requested(reason: String)
 signal workers_changed(position: Vector2, count: int)
 signal worker_efficiency_changed(position: Vector2, efficiency: float)
+## Cuantos trabajadores han LLEGADO de verdad al puesto (no solo asignados).
+## Los edificios producen solo con los presentes. Emitida a ~4 Hz.
+signal workers_present_changed(position: Vector2, present: int)
 ## Emitida solo cuando cambia el numero de aldeanos sin vivienda (0 = todos
 ## alojados). El HUD la usa para el aviso persistente.
 signal homeless_changed(count: int)
@@ -36,6 +39,12 @@ var _defeat_requested := false
 var _homeless_count := 0
 var _next_name_id := 0
 var _meal_time := false
+## Ultimo recuento de trabajadores presentes por puesto, para emitir solo al
+## cambiar. Aprovecha el mismo patron que workers_changed.
+var _present_cache: Dictionary = {}
+var _presence_timer := 0.0
+## Cada cuanto se recalcula la presencia (segundos).
+const PRESENCE_INTERVAL := 0.25
 ## Hoguera inicial donde duermen los aldeanos sin casa.
 var _shelter_pos := Vector2.INF
 ## Resultado de la ultima comida (true = todos comieron). Se evalua al
@@ -57,6 +66,61 @@ func _ready() -> void:
 	_spawn_initial_population()
 
 
+# Cada PRESENCE_INTERVAL cuenta cuantos trabajadores de cada puesto han llegado
+# ya (is_at_work) y avisa a Buildings si el numero cambio. Asi un edificio no
+# produce mientras los aldeanos solo van de camino.
+func _process(delta: float) -> void:
+	_presence_timer -= delta
+	if _presence_timer > 0.0:
+		return
+	_presence_timer = PRESENCE_INTERVAL
+	if _buildings == null:
+		return
+	for group in _work_groups.values():
+		var present := 0
+		for worker in group["workers"]:
+			if is_instance_valid(worker) and worker.is_at_work():
+				present += 1
+		_emit_workers_present(group["position"], present)
+		# Granjas: los presentes cogen la comida cosechada y la llevan al
+		# almacen; al irse dejan de contar como presentes y la cosecha se pausa.
+		var def := _buildings.get_def(group["type"])
+		if def != null and def.has_field:
+			_pick_farm_loads(group)
+			_report_farm_workers(group)
+
+
+# Avisa a Buildings de donde estan los granjeros presentes, para que la cosecha
+# no se les adelante.
+func _report_farm_workers(group: Dictionary) -> void:
+	var positions := PackedVector2Array()
+	for worker in group["workers"]:
+		if is_instance_valid(worker) and worker.is_at_work():
+			var p: Vector3 = worker.global_position
+			positions.append(Vector2(p.x, p.z))
+	_buildings.report_farm_workers(group["position"], positions)
+
+
+# Da una carga de comida como mucho a UN granjero presente por tick (los demas
+# siguen cosechando; si no, se iban todos a la vez y el campo se quedaba solo).
+func _pick_farm_loads(group: Dictionary) -> void:
+	for worker in group["workers"]:
+		if not is_instance_valid(worker) or worker.is_carrying() or not worker.is_at_work():
+			continue
+		var load := _buildings.take_farm_food(group["position"], worker.carry_capacity())
+		if load.is_empty():
+			return
+		worker.start_carry(load["target"], load["amount"], load["resource"])
+		return
+
+
+func _emit_workers_present(position: Vector2, present: int) -> void:
+	if _present_cache.get(position, -1) == present:
+		return
+	_present_cache[position] = present
+	workers_present_changed.emit(position, present)
+
+
 func _on_building_built(type: StringName, pos: Vector2) -> void:
 	var def := _buildings.get_def(type)
 	if def == null:
@@ -68,6 +132,9 @@ func _on_building_built(type: StringName, pos: Vector2) -> void:
 	elif def.worker_count > 0:
 		_work_groups[pos] = {
 			"position": pos,
+			# Punto donde deambula el trabajador. Las granjas lo mueven al centro
+			# del campo cuando se delimita (set_work_area).
+			"area": pos,
 			"type": type,
 			"capacity": def.worker_count,
 			"name": def.display_name,
@@ -89,6 +156,8 @@ func _on_building_demolished(type: StringName, pos: Vector2) -> void:
 		_rehouse_villagers(evicted)
 	elif _work_groups.has(pos):
 		_work_groups.erase(pos)
+		_present_cache.erase(pos)
+		workers_present_changed.emit(pos, 0)
 	_refresh_gathering()
 	_reassign_workers()
 
@@ -106,7 +175,9 @@ func _house_new_residents(home: Vector2, capacity: int) -> void:
 	# al acabar la jornada en vez de al centro del mapa.
 	var door_offset := _house_door_offset(home)
 	for villager in household:
-		villager.assign_home(home, door_offset)
+		# Cada uno con un punto ligeramente distinto: si todos apuntan al mismo
+		# sitio, la evitacion los hace girar alrededor de la puerta.
+		villager.assign_home(home, door_offset + _door_jitter())
 
 
 ## Un aldeano tiene vivienda si el propio aldeano lo dice (estado explicito),
@@ -248,7 +319,7 @@ func _try_new_arrival() -> void:
 		# Sin sitio, la poblacion no crece (no se crean aldeanos sin vivienda).
 		message_requested.emit("No hay viviendas disponibles para nuevos aldeanos")
 		return
-	var door_offset := _house_door_offset(available_house)
+	var door_offset := _house_door_offset(available_house) + _door_jitter()
 	var villager := _create_villager(available_house, door_offset, door_offset, true)
 	(_house_groups[available_house] as Array).append(villager)
 	message_requested.emit("Ha llegado un nuevo aldeano")
@@ -291,9 +362,13 @@ func _rehouse_villagers(villagers: Array) -> void:
 			homeless += 1
 			continue
 		(_house_groups[home] as Array).append(villager)
-		villager.assign_home(home, _house_door_offset(home))
+		villager.assign_home(home, _house_door_offset(home) + _door_jitter())
 	if homeless > 0:
 		message_requested.emit("%d aldeanos se han quedado sin hogar" % homeless)
+
+
+func _door_jitter() -> Vector2:
+	return Vector2(randf_range(-0.35, 0.35), randf_range(-0.35, 0.35))
 
 
 func _house_door_offset(home: Vector2) -> Vector2:
@@ -311,7 +386,9 @@ func _reassign_workers() -> void:
 	for villager in _villagers:
 		if not is_instance_valid(villager) or not villager.is_working():
 			continue
-		var group: Variant = _group_at(villager.work_position)
+		# Se busca por la clave del edificio, no por el punto de deambulacion
+		# (en las granjas es un punto del campo, no la casita).
+		var group: Variant = _group_at(villager.work_key)
 		if group == null:
 			villager.clear_work()
 		else:
@@ -321,11 +398,32 @@ func _reassign_workers() -> void:
 			var villager: Variant = _find_free_villager()
 			if villager == null:
 				break
-			villager.assign_work(group["position"], group["name"])
+			villager.assign_work(_work_spot_for(group, villager), group["name"], group["position"])
 			villager.set_work_schedule(_daytime)
 			(group["workers"] as Array).append(villager)
 		_emit_group_workers(group)
 	_emit_population()
+
+
+# Punto donde debe deambular un trabajador: en las granjas, un punto al azar
+# dentro del campo (reparte a los granjeros); en el resto, el propio edificio.
+func _work_spot_for(group: Dictionary, villager) -> Vector2:
+	var def := _buildings.get_def(group["type"])
+	if def != null and def.has_field:
+		return _buildings.random_field_point(group["position"], villager.work_lane)
+	return group["area"]
+
+
+## Cambia el punto de trabajo de un edificio (granjas: el centro del campo).
+## Los trabajadores ya asignados se reparten por el campo; los futuros tambien.
+func set_work_area(position: Vector2, area: Vector2) -> void:
+	var group: Variant = _group_at(position)
+	if group == null:
+		return
+	group["area"] = area
+	for worker in group["workers"]:
+		if is_instance_valid(worker):
+			worker.set_work_spot(_work_spot_for(group, worker))
 
 
 func assign_free_worker(position: Vector2) -> bool:
@@ -336,7 +434,7 @@ func assign_free_worker(position: Vector2) -> bool:
 	if villager == null:
 		return false
 	_manual_free.erase(villager)
-	villager.assign_work(position, group["name"])
+	villager.assign_work(_work_spot_for(group, villager), group["name"], group["position"])
 	villager.set_work_schedule(_daytime)
 	(group["workers"] as Array).append(villager)
 	_emit_group_workers(group)
