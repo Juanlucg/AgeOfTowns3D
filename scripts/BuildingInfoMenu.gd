@@ -27,6 +27,15 @@ var _capacity_value: Label = null
 var _capacity_resource: StringName = &""
 # Seccion de habitantes de una casa: se repuebla en vivo con population_changed.
 var _residents_box: VBoxContainer = null
+# Botones de cultivo de una granja (id -> Button) para el handler manual de _input.
+var _crop_buttons: Dictionary = {}
+# Camara para reproyectar la posicion del edificio cada frame; la inyecta Main.
+var _cam: CameraController3D = null
+
+
+## Camara con la que mantener el menu anclado al edificio.
+func bind_camera(cam: CameraController3D) -> void:
+	_cam = cam
 
 
 func _ready() -> void:
@@ -61,6 +70,7 @@ func show_for(record: BuildingRecord, at: Vector2) -> void:
 	_record = record
 	_last_screen_pos = at
 	_worker_status_labels.clear()
+	_crop_buttons.clear()
 	# Los nodos de la barra anterior se van a liberar con el contenido viejo:
 	# mejor olvidarlos para que Economy.changed no toque nodos muertos.
 	_capacity_bar = null
@@ -98,10 +108,13 @@ func show_for(record: BuildingRecord, at: Vector2) -> void:
 		hide_menu()
 		return
 
-	_build_header(_content, def)
+	_build_header(_content, def, record)
 	if def.description != "":
 		_content.add_child(HSeparator.new())
 		_build_description(_content, def.description)
+	if def.has_field and record.crop != "":
+		_content.add_child(HSeparator.new())
+		_build_crop(_content, record)
 	if def.housing_capacity > 0:
 		_content.add_child(HSeparator.new())
 		_build_residents(_content, def, record)
@@ -116,12 +129,28 @@ func show_for(record: BuildingRecord, at: Vector2) -> void:
 
 	visible = true
 	await get_tree().process_frame
-	# Posicion: a la derecha del edificio, dentro del viewport.
+	# Posicion: encima del edificio, dentro del viewport.
+	_last_screen_pos = at
+	_place_panel(at)
+
+
+# Coloca el panel encima de `at` (posicion en pantalla), dentro del viewport.
+func _place_panel(at: Vector2) -> void:
 	var vp := get_viewport_rect().size
 	var pos := at + Vector2(-size.x * 0.5, -size.y - 16)
 	pos.x = clampf(pos.x, 8, maxf(8.0, vp.x - size.x - 8.0))
 	pos.y = clampf(pos.y, 8, maxf(8.0, vp.y - size.y - 8.0))
 	position = pos
+
+
+# El menu queda anclado al edificio: cada frame se reproyecta su posicion de
+# mundo, asi que sigue al edificio si el jugador mueve la camara.
+func _process(_delta: float) -> void:
+	if not visible or _record == null or _cam == null:
+		return
+	var p := _record.pos
+	_last_screen_pos = _cam.world_to_screen(Vector3(p.x, Terrain.height_at(p), p.y))
+	_place_panel(_last_screen_pos)
 
 
 func hide_menu() -> void:
@@ -138,11 +167,17 @@ func _input(event: InputEvent) -> void:
 		return
 	if event is InputEventMouseButton and event.pressed \
 			and event.button_index == MOUSE_BUTTON_RIGHT:
-		hide_menu()
+		_close_and_deselect()
 		get_viewport().set_input_as_handled()
 		return
 	if event is InputEventMouseButton and event.pressed \
 			and event.button_index == MOUSE_BUTTON_LEFT:
+		for crop_id in _crop_buttons:
+			var crop_button: Button = _crop_buttons[crop_id]
+			if is_instance_valid(crop_button) and _button_rect(crop_button).has_point(event.position):
+				_on_crop_selected(String(crop_id))
+				get_viewport().set_input_as_handled()
+				return
 		if _assign_button != null and _button_rect(_assign_button).has_point(event.position):
 			if _villagers != null:
 				_villagers.assign_free_worker(_record.pos)
@@ -169,14 +204,28 @@ func has_record() -> bool:
 
 
 func _on_catcher_input(event: InputEvent) -> void:
-	if event is InputEventMouseButton and event.pressed:
-		hide_menu()
+	# Solo botones reales: la rueda entra como InputEventMouseButton pulsado y no
+	# debe cerrar el menu al hacer scroll.
+	if event is InputEventMouseButton and event.pressed \
+			and (event.button_index == MOUSE_BUTTON_LEFT \
+			or event.button_index == MOUSE_BUTTON_RIGHT):
+		_close_and_deselect()
 		get_viewport().set_input_as_handled()
+
+
+# Cerrar el menu al hacer clic fuera NO basta: el edificio seguia seleccionado y
+# su anillo se quedaba dibujado. Hay que deseleccionar en Buildings, que ademas
+# vuelve a cerrar el menu por la senal building_focus_changed.
+func _close_and_deselect() -> void:
+	if _buildings != null and _buildings.get_selected() != null:
+		_buildings.deselect()
+	else:
+		hide_menu()
 
 
 # --- builders internos ---
 
-func _build_header(parent: VBoxContainer, def: BuildingDef) -> void:
+func _build_header(parent: VBoxContainer, def: BuildingDef, record: BuildingRecord) -> void:
 	var row := HBoxContainer.new()
 	row.add_theme_constant_override("separation", 10)
 	parent.add_child(row)
@@ -194,10 +243,23 @@ func _build_header(parent: VBoxContainer, def: BuildingDef) -> void:
 	title_box.add_child(title)
 	if def.can_produce():
 		var sub := Label.new()
-		sub.text = "+%s %s / %ss" % [_fmt(def.prod_amount), String(def.prod_resource), _fmt(def.prod_interval)]
+		sub.text = _production_text(def, record)
 		sub.add_theme_font_size_override("font_size", 11)
 		sub.add_theme_color_override("font_color", Color(1, 1, 1, 0.65))
 		title_box.add_child(sub)
+
+
+# Linea de produccion del header. Las granjas producen por cosecha (importe y
+# tiempo segun el cultivo), asi que se muestran aparte; el resto usa el
+# prod_amount/prod_interval del def.
+func _production_text(def: BuildingDef, record: BuildingRecord) -> String:
+	if def.has_field and record != null and record.crop != "" and _buildings != null:
+		var crop := _buildings.crop_def(record.crop)
+		var amount: float = record.amount if record.amount > 0.0 else def.prod_amount
+		return "+%s %s por cosecha (%s, cada %ss)" % [
+			_fmt(amount), String(def.prod_resource),
+			String(crop.get("name", record.crop)), _fmt(float(crop.get("grow_seconds", 0.0)))]
+	return "+%s %s / %ss" % [_fmt(def.prod_amount), String(def.prod_resource), _fmt(def.prod_interval)]
 
 
 func _build_description(parent: VBoxContainer, text: String) -> void:
@@ -315,6 +377,30 @@ func _on_population_changed(_population: int, _housing: int, _workers: int) -> v
 	_populate_residents(def, _record)
 
 
+# Seccion de cultivo de una granja: un boton por cultivo. El actual se resalta
+# con su color. Cambiar de cultivo resiembra el campo (ver Buildings.set_farm_crop).
+func _build_crop(parent: VBoxContainer, record: BuildingRecord) -> void:
+	var title := Label.new()
+	title.text = "Cultivo"
+	title.add_theme_font_size_override("font_size", 12)
+	title.add_theme_color_override("font_color", Color(1, 1, 1, 0.65))
+	parent.add_child(title)
+	var actions := HBoxContainer.new()
+	actions.add_theme_constant_override("separation", 6)
+	parent.add_child(actions)
+	for id in _buildings.crop_ids():
+		var crop_id := String(id)
+		var crop := _buildings.crop_def(crop_id)
+		var button := Button.new()
+		button.text = String(crop["name"])
+		button.mouse_filter = Control.MOUSE_FILTER_STOP
+		button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		if crop_id == record.crop:
+			button.add_theme_color_override("font_color", crop["color"])
+		actions.add_child(button)
+		_crop_buttons[crop_id] = button
+
+
 func _build_workers(parent: VBoxContainer, def: BuildingDef, assigned: int, position: Vector2) -> void:
 	var title := Label.new()
 	title.text = "Trabajadores"
@@ -402,6 +488,18 @@ func _on_demolish_pressed() -> void:
 	var rec := _record
 	hide_menu()
 	_buildings.demolish(rec)
+
+
+# Cambia el cultivo de la granja seleccionada y rehace el menu para reflejar el
+# nuevo cultivo (resaltado y linea de produccion).
+func _on_crop_selected(crop_id: String) -> void:
+	if _record == null or _buildings == null:
+		return
+	if not _buildings.set_farm_crop(_record, crop_id):
+		return
+	# Diferido: show_for limpia _crop_buttons, que es el contenedor que estamos
+	# recorriendo en _input al detectar el clic.
+	show_for.call_deferred(_record, _last_screen_pos)
 
 
 func _fmt(n: float) -> String:

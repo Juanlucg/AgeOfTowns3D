@@ -17,8 +17,13 @@ func show_for(def: BuildingDef, at: Vector2) -> void:
 	vbox.add_child(title)
 	_add_row(vbox, "Coste", def.cost_text())
 	if def.can_produce():
-		var amt := _format_amount(def.prod_amount)
-		_add_row(vbox, "Produce", "+%s %s cada %ss" % [amt, String(def.prod_resource), _format_amount(def.prod_interval)])
+		if def.has_field:
+			# Las granjas producen por cosecha; el importe sale del campo y del
+			# cultivo que se elija al colocar, no del def.
+			_add_row(vbox, "Produce", "%s por cosecha (elige cultivo)" % String(def.prod_resource))
+		else:
+			var amt := _format_amount(def.prod_amount)
+			_add_row(vbox, "Produce", "+%s %s cada %ss" % [amt, String(def.prod_resource), _format_amount(def.prod_interval)])
 	if def.hint != "":
 		_add_row(vbox, "", def.hint)
 	_add_row(vbox, "Biomas", def.biomes_text())

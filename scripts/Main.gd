@@ -23,6 +23,7 @@ extends Node3D
 @onready var minimap: Minimap = $MinimapLayer/Minimap
 @onready var dev_tools: DevTools = $DevTools
 @onready var info_menu: BuildingInfoMenu = $InfoLayer/BuildingInfoMenu
+@onready var crop_menu: CropSelectMenu = $CropSelectMenu
 @onready var game_over: GameOverOverlay = $GameOverOverlay
 @onready var paths: Paths = $Paths
 @onready var bridges: Bridges = $Bridges
@@ -43,11 +44,18 @@ func _ready() -> void:
 	paths.path_clear_requested.connect(rocks.clear_near)
 	bridges.message_requested.connect(hud.show_message)
 	info_menu.bind(buildings, villagers)
+	info_menu.bind_camera(camera)
+	crop_menu.bind_camera(camera)
+	buildings.crop_select_requested.connect(crop_menu.open)
+	crop_menu.crop_selected.connect(buildings.choose_field_crop)
+	crop_menu.cancelled.connect(buildings.cancel_field_crop_selection)
 	buildings.building_focus_changed.connect(_on_building_focus)
 	buildings.building_demolished.connect(minimap._on_building_demolished)
 	villagers.message_requested.connect(hud.show_message)
 	villagers.workers_changed.connect(buildings.set_worker_count)
 	villagers.worker_efficiency_changed.connect(buildings.set_worker_efficiency)
+	villagers.workers_present_changed.connect(buildings.set_workers_present)
+	buildings.work_area_changed.connect(villagers.set_work_area)
 	villagers.population_changed.connect(hud.update_population)
 	villagers.homeless_changed.connect(hud.update_homeless)
 	villagers.defeat_requested.connect(_on_defeat_requested)

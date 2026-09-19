@@ -14,6 +14,7 @@
 [ext_resource type="Script" uid="uid://cf63olqimt2vs" path="res://scripts/BuildingInfoMenu.gd" id="13_info"]
 [ext_resource type="Script" uid="uid://bw5xels6vxjec" path="res://scripts/OpenSea.gd" id="14_sea"]
 [ext_resource type="Script" uid="uid://bj7q14ed3o2iu" path="res://scripts/Villagers.gd" id="15_villagers"]
+[ext_resource type="Script" uid="uid://ba7tapbp5pmue" path="res://scripts/CropSelectMenu.gd" id="20_crop_menu"]
 [ext_resource type="Script" path="res://scripts/NavigationWorld.gd" id="16_navigation"]
 [ext_resource type="Script" path="res://scripts/GameOverOverlay.gd" id="17_game_over"]
 [ext_resource type="Script" path="res://scripts/Paths.gd" id="18_paths"]
@@ -98,6 +99,9 @@ bridges_path = NodePath("../Bridges")
 script = ExtResource("11_dev")
 day_night_path = NodePath("../DayNightCycle")
 buildings_path = NodePath("../Buildings")
+
+[node name="CropSelectMenu" type="CanvasLayer" parent="." unique_id=3333333333]
+script = ExtResource("20_crop_menu")
 
 [node name="InfoLayer" type="CanvasLayer" parent="." unique_id=-2072745074]
 
