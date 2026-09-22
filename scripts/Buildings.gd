@@ -14,6 +14,8 @@ class_name Buildings
 ##
 ## Modulos: [BuildingDef] (datos), [BuildingMeshes] (geometria), [FieldMesh] (campo).
 
+const SAWMILL_CREW_SCRIPT := preload("res://scripts/SawmillCrew.gd")
+
 signal building_built(type: StringName, pos: Vector2)
 signal building_demolished(type: StringName, pos: Vector2)
 signal selection_changed(type: StringName)
@@ -24,6 +26,9 @@ signal selection_changed(type: StringName)
 signal building_focus_changed(rec: BuildingRecord, screen_pos: Vector2)
 signal message_requested(text: String)
 signal place_clear_requested(pos: Vector2, radius: float)
+## Como place_clear_requested pero solo para la vegetacion: los edificios que se
+## apoyan en una roca (cantera) no deben hundir su propio yacimiento.
+signal vegetation_clear_requested(pos: Vector2, radius: float)
 ## Pide a la UI que el jugador elija cultivo para un campo ya delimitado.
 ## `options` es un Array de diccionarios {id, name, color} y `anchor` la posicion
 ## de mundo de la granja (la UI la proyecta para anclar el menu encima). La UI
@@ -70,6 +75,9 @@ const STONE_COLOR := Color(0.58, 0.55, 0.49)   # gris arenoso: el gris neutro
 											   # se volvia azul con la luz
 											   # ambiental de primavera
 const DEMOLISH_REFUND := 0.5   # fraccion del coste que se devuelve
+## Cada cuanto se intenta rebrotar recurso en el radio de un productor del
+## entorno (aserradero/cantera). No restaura bajo edificios ni en agua.
+const REGROW_SECONDS := 30.0
 
 # Cultivos que se pueden sembrar. Cada uno tiene su color, lo que tarda en
 # madurar y un multiplicador de rendimiento. La tasa sostenida de un cultivo
@@ -118,6 +126,13 @@ var _grid: Dictionary = {}   # clave: Vector2i(cell_x, cell_y) -> Array[Building
 var _nearby_scratch: Array[BuildingRecord] = []
 var _cam_rig: CameraController3D
 
+# Capas de recursos del entorno que consumen los productores (aserradero:
+# arboles, cantera: rocas). Se inyectan desde Main.gd con bind_scatter().
+var _veg: ScatterLayer = null
+var _rocks: ScatterLayer = null
+# Acumulador del rebrote (ver _update_regrow).
+var _regrow_timer := 0.0
+
 var _field_mode := false
 var _field_start := Vector2.ZERO
 var _field_crop := "trigo"
@@ -142,6 +157,9 @@ var _user_rotated := false
 # Edificio actualmente seleccionado (para demolir con Delete). Null = nada.
 var _selected: BuildingRecord = null
 var _selection_marker: Node3D = null
+# Edificio que se esta reubicando (cantera sin piedra que busca otra roca). Si
+# no es null, la siguiente colocacion mueve este edificio en vez de crear uno.
+var _relocating: BuildingRecord = null
 
 # --- Herramientas dev ---
 var dev_free_build := false
@@ -159,6 +177,9 @@ var _ghost_last_valid := false
 
 
 func _ready() -> void:
+	# El registro de colision es estatico y sobrevive a recargar la escena: se
+	# limpia al empezar para no arrastrar huellas de la partida anterior.
+	clear_blocks()
 	_cam_rig = get_node_or_null(camera_path) as CameraController3D
 	if _cam_rig == null:
 		push_error("Buildings: camera_path no apunta a un CameraController3D en el .tscn")
@@ -208,6 +229,218 @@ func get_def(id: StringName) -> BuildingDef:
 
 func get_ids() -> Array[StringName]:
 	return _ids
+
+
+## Inyecta las capas de recursos del entorno (Main.gd). Necesario para que los
+## productores con `resource_node` cuenten/consuman arboles o rocas.
+func bind_scatter(veg: ScatterLayer, rocks: ScatterLayer) -> void:
+	_veg = veg
+	_rocks = rocks
+
+
+# Capa de una clase de recurso natural.
+func _node_layer(kind: StringName) -> ScatterLayer:
+	match kind:
+		&"arboles":
+			return _veg
+		&"rocas":
+			return _rocks
+	return null
+
+
+# Variantes de instancia que cuentan como recurso (Vegetation: 0 pino, 1
+# redondo, 2 arbusto; Rocks: 0/1/2 rocas). Los arbustos no son madera.
+func _node_variants(kind: StringName) -> Array[int]:
+	match kind:
+		&"arboles":
+			var trees: Array[int] = [0, 1]
+			return trees
+		&"rocas":
+			var stones: Array[int] = [0, 1, 2]
+			return stones
+	var none: Array[int] = []
+	return none
+
+
+# Recurso no consumido en el radio de trabajo de `rec`. Devuelve -1 si el
+# edificio no consume entorno o la capa aun no esta poblada.
+func _available_in_radius(rec: BuildingRecord) -> int:
+	return _available_at(get_def(rec.type), rec.pos)
+
+
+# Recurso no consumido en el radio de trabajo de un def en `pos`. -1 = no
+# aplica o la capa aun no esta poblada (se trata como "desconocido").
+func _available_at(d: BuildingDef, pos: Vector2) -> int:
+	if d == null or d.resource_node == &"":
+		return -1
+	var layer := _node_layer(d.resource_node)
+	if layer == null or not layer.is_populated():
+		return -1
+	return layer.count_resource(pos, _env_radius(d), _node_variants(d.resource_node))
+
+
+# Radio operativo del entorno: el work_radius si lo hay o, para los edificios
+# apoyados en un yacimiento (cantera, sin zona), la propia huella.
+func _env_radius(d: BuildingDef) -> float:
+	if d.work_radius > 0.0:
+		return d.work_radius
+	return d.footprint * 0.5 + 0.6
+
+
+## Recurso no consumido en el radio, para la UI. -1 = no aplica / desconocido.
+func resource_in_radius(rec: BuildingRecord) -> int:
+	return _available_in_radius(rec)
+
+
+## Instancia de arbol mas cercana en `radius` (cuadrilla del aserradero).
+## Devuelve {mmi, index, pos} o {}. `exclude`/`min_sep` evitan que dos
+## lenadores elijan el mismo arbol.
+func find_tree(pos: Vector2, radius: float, exclude: Array = [], min_sep := 0.0) -> Dictionary:
+	if _veg == null or not _veg.is_populated():
+		return {}
+	return _veg.find_nearest(pos, radius, _node_variants(&"arboles"), exclude, min_sep)
+
+
+## Retira un arbol concreto (handle de [method find_tree]).
+func consume_tree(handle: Dictionary) -> void:
+	if _veg == null or handle.is_empty():
+		return
+	_veg.consume_instance(handle.get("mmi"), int(handle.get("index", -1)))
+
+
+## Replanta un arbol en el hueco de uno talado (lo usa el sembrador). Reutiliza
+## la instancia consumida (revive_instance) para no agrandar el MultiMesh en
+## runtime; si no pudiera, crea una nueva.
+func plant_tree(handle: Dictionary) -> void:
+	if _veg == null or handle.is_empty():
+		return
+	var pos: Vector2 = handle.get("pos", Vector2.ZERO)
+	var s := randf_range(0.7, 1.0)
+	var basis := Basis(Vector3.UP, randf_range(0.0, TAU)).scaled(Vector3(s, s, s))
+	var xform := Transform3D(basis, Vector3(pos.x, Terrain.height_at(pos), pos.y))
+	if not _veg.revive_instance(handle.get("mmi"), int(handle.get("index", -1)), xform):
+		_veg.spawn_instance(xform, int(handle.get("variant", 0)))
+
+
+## Registro colocado en `pos` (la cuadrilla lo usa para localizar su nodo).
+func record_at(pos: Vector2) -> BuildingRecord:
+	return _record_at(pos)
+
+
+# Crea la cuadrilla animada de un edificio (aserradero). Va como hijo del nodo
+# del edificio para que se mueva con el y se libere al demolerlo.
+func _spawn_crew(rec: BuildingRecord) -> void:
+	if rec.node == null or not is_instance_valid(rec.node):
+		return
+	if rec.node.get_node_or_null("SawmillCrew") != null:
+		return
+	var crew := SAWMILL_CREW_SCRIPT.new()
+	crew.name = "SawmillCrew"
+	rec.node.add_child(crew)
+	crew.bind(self, rec)
+
+
+# Pega el punto de colocacion a la roca con reserva mas cercana, si el edificio
+# se apoya en un yacimiento (cantera). Sin roca cerca devuelve `ground` tal cual
+# (y _is_valid lo rechazara).
+func _snap_ground(ground: Vector2, d: BuildingDef) -> Vector2:
+	if d == null or not d.requires_deposit:
+		return ground
+	var layer := _node_layer(d.resource_node)
+	if layer == null or not layer.is_populated():
+		return ground
+	var dep := layer.find_deposit(ground, d.footprint + 1.5, _node_variants(d.resource_node))
+	if dep.is_empty():
+		return ground
+	return dep["pos"]
+
+
+## True si el edificio se apoya en un yacimiento ya agotado (la cantera sin
+## piedra): la UI muestra entonces el boton de reubicar.
+func needs_relocate(rec: BuildingRecord) -> bool:
+	if rec == null:
+		return false
+	var d := get_def(rec.type)
+	if d == null or not d.requires_deposit:
+		return false
+	var layer := _node_layer(d.resource_node)
+	if layer == null or not layer.is_populated():
+		return false
+	return not layer.deposit_is_active(rec.deposit)
+
+
+## Entra en modo reubicacion: la siguiente colocacion mueve `rec` a la roca
+## elegida en vez de construir un edificio nuevo. Devuelve false si no aplica.
+func start_relocate(rec: BuildingRecord) -> bool:
+	if rec == null:
+		return false
+	var d := get_def(rec.type)
+	if d == null or not d.requires_deposit:
+		return false
+	_deselect_all()
+	cancel_placement()
+	select(String(rec.type))
+	if _pending != rec.type:
+		return false
+	_relocating = rec
+	message_requested.emit("Elige otra roca para el %s" % d.display_name)
+	return true
+
+
+# Mueve el edificio en reubicacion a `ground` (ya pegado a su nueva roca).
+func _finish_relocate(ground: Vector2, d: BuildingDef) -> void:
+	var rec := _relocating
+	if rec == null:
+		return
+	if not _is_valid(ground, rec.type, rec):
+		if d.requires_deposit and _available_at(d, ground) <= 0:
+			message_requested.emit("El %s necesita otra roca" % d.display_name)
+		else:
+			message_requested.emit("No se puede mover ahi: demasiado cerca de otro edificio")
+		return
+	var layer := _node_layer(d.resource_node)
+	var dep := {}
+	if layer != null:
+		dep = layer.find_deposit(ground, 0.0, _node_variants(d.resource_node))
+	if d.requires_deposit and dep.is_empty():
+		message_requested.emit("El %s necesita otra roca" % d.display_name)
+		return
+	var old_pos := rec.pos
+	_remove_from_grid(rec)
+	unregister_block(old_pos)
+	rec.pos = ground
+	rec.yaw = _yaw
+	rec.deposit = dep
+	rec.resource_depleted = false
+	var base_h := _base_height(ground, d.footprint)
+	rec.node.position = Vector3(ground.x, base_h, ground.y)
+	for c in rec.node.get_children():
+		# Solo se gira el cuerpo (Node3D). El nodo tambien tiene un Timer de
+		# produccion y un NavigationObstacle3D, que no tienen `rotation`.
+		if c is Node3D and not (c is NavigationObstacle3D):
+			(c as Node3D).rotation.y = deg_to_rad(rec.yaw)
+	_add_to_grid(rec)
+	register_block(ground, d.footprint * 0.5)
+	# Solo vegetacion: la nueva roca no se hunde.
+	vegetation_clear_requested.emit(ground, d.footprint * 0.75)
+	# Villagers y minimapa mueven su grupo/marcador tratandolo como demolido en
+	# el sitio viejo y construido en el nuevo.
+	building_demolished.emit(rec.type, old_pos)
+	building_built.emit(rec.type, ground)
+	message_requested.emit("%s movido a una nueva roca" % d.display_name)
+	_relocating = null
+	cancel_placement()
+	toggle_select(rec)
+
+
+## Etiqueta legible de una clase de recurso natural.
+func resource_label(kind: StringName) -> String:
+	match kind:
+		&"arboles":
+			return "árboles"
+		&"rocas":
+			return "rocas"
+	return String(kind)
 
 
 # --- API de la plaza (reunion / crecimiento / felicidad) ---
@@ -386,7 +619,16 @@ func set_shift_active(active: bool) -> void:
 	_shift_active = active
 	for rec in _placed:
 		var d := get_def(rec.type)
-		if d == null or not d.can_produce() or rec.dev or rec.workers <= 0:
+		if d == null:
+			continue
+		# Las cuadrillas (aserradero) deben enterarse del cambio de turno YA.
+		# Antes solo lo sabian en el tick de presencia de Villagers (hasta
+		# 0.25 s despues), y en ese hueco seguian mandando a los aldeanos a su
+		# tarea, pisando el destino de la comida: se quedaban "comiendo" junto
+		# al edificio en vez de ir a casa.
+		if d.crew_type != &"":
+			_sync_crew_shift(rec, active)
+		if not d.can_produce() or rec.dev or rec.workers <= 0:
 			continue
 		var nominal := _worker_production_rate(rec)
 		if active:
@@ -394,6 +636,14 @@ func set_shift_active(active: bool) -> void:
 		else:
 			_update_production_rate(d.prod_resource, -nominal)
 	Economy.changed.emit()
+
+
+func _sync_crew_shift(rec: BuildingRecord, active: bool) -> void:
+	if rec.node == null or not is_instance_valid(rec.node):
+		return
+	var crew = rec.node.get_node_or_null("SawmillCrew")
+	if crew != null:
+		crew.set_shift(active)
 
 
 func _update_production_rate(resource: StringName, delta: float) -> void:
@@ -551,7 +801,7 @@ func toggle_select(rec: BuildingRecord) -> void:
 	_selected = rec
 	_update_selection_marker()
 	var screen := Vector2.ZERO
-	if rec != null and rec.node != null and is_instance_valid(rec.node):
+	if rec != null and rec.node != null and is_instance_valid(rec.node) and _cam_rig != null:
 		# Punto del edificio proyectado al centro de la pantalla, cerca del suelo.
 		var ground3 := Vector3(rec.pos.x, Terrain.height_at(rec.pos), rec.pos.y)
 		screen = _cam_rig.world_to_screen(ground3)
@@ -658,6 +908,7 @@ func demolish(rec: BuildingRecord) -> void:
 	# demas consultas ya no lo vean.
 	_placed.erase(rec)
 	_remove_from_grid(rec)
+	unregister_block(rec.pos)
 	unregister_fence(rec.pos)
 	# Libera los nodos visuales (casita y, si es granja, el campo).
 	if rec.node != null and is_instance_valid(rec.node):
@@ -741,6 +992,7 @@ func select(id_str: String) -> void:
 
 func cancel_placement() -> void:
 	_pending = &""
+	_relocating = null
 	if _ghost != null:
 		_ghost.queue_free()
 		_ghost = null
@@ -752,12 +1004,17 @@ func _process(delta: float) -> void:
 	# La cosecha se comprueba siempre, tambien mientras se coloca otro edificio
 	# o se delimita un campo, para que las granjas ya existentes no se paren.
 	_update_farms(delta)
+	# El rebrote del entorno tambien se comprueba siempre.
+	_update_regrow(delta)
 	if _field_mode:
 		_update_field_ghost(delta)
 		return
 	if _pending == &"" or _ghost == null:
 		return
 	var ground: Vector2 = _cam_rig.screen_to_ground(get_viewport().get_mouse_position())
+	var d := get_def(_pending)
+	# Yacimientos: el fantasma se pega a la roca mas cercana (encima de ella).
+	ground = _snap_ground(ground, d)
 	# Yaw: R = rotacion manual del usuario (persiste al soltar). Si no se ha
 	# rotado manualmente, la cara del edificio sigue a la camara. Una vez
 	# que el usuario toca R, _user_rotated=true y el auto-face se desactiva
@@ -775,7 +1032,6 @@ func _process(delta: float) -> void:
 			# local (no +Z como pensabamos). Empíricamente la puerta queda
 			# detras si solo calculamos atan2; este offset lo corrige.
 			_yaw = rad_to_deg(atan2(dir.x, dir.z)) + _facade_offset(_pending)
-	var d := get_def(_pending)
 	var base_h := _base_height(ground, d.footprint)
 	_ghost.position = Vector3(ground.x, base_h, ground.y)
 	# Solo gira el cuerpo.
@@ -801,6 +1057,10 @@ func _attach_production_timer(rec: BuildingRecord) -> void:
 	# (ver _update_farms). La tasa media sigue registrandose para el HUD.
 	if d.has_field:
 		return
+	# Los edificios con cuadrilla (aserradero) producen por el ciclo real de sus
+	# aldeanos, no por timer (ver SawmillCrew).
+	if d.crew_type != &"":
+		return
 	var timer := Timer.new()
 	timer.name = "ProductionTimer"
 	timer.wait_time = d.prod_interval
@@ -820,8 +1080,87 @@ func _on_production_timer(rec: BuildingRecord) -> void:
 	if not _shift_active:
 		return
 	var d := get_def(rec.type)
-	var amt: float = (rec.amount if rec.amount > 0.0 else d.prod_amount) * rec.workers_present * rec.worker_efficiency
-	Economy.add(String(d.prod_resource), amt)
+	if d == null:
+		return
+	# Productores del entorno (aserradero, cantera). Cada ciclo consume recurso
+	# natural del radio: los yacimientos (rocas) rinden varias extracciones y el
+	# edificio se acopla al mas cercano; la vegetacion (arboles) es de un uso.
+	if d.resource_node != &"":
+		var layer := _node_layer(d.resource_node)
+		if layer == null or not layer.is_populated():
+			return
+		var amt: float = (rec.amount if rec.amount > 0.0 else d.prod_amount) * rec.workers_present * rec.worker_efficiency
+		var got := _take_environment(rec, d, layer, amt)
+		if got <= 0.0:
+			if not rec.resource_depleted:
+				rec.resource_depleted = true
+				message_requested.emit("Sin %s cerca del %s" % [
+					resource_label(d.resource_node), d.display_name])
+			return
+		rec.resource_depleted = false
+		rec.pending += got
+		return
+	# El recurso no va directo a Economy: se acumula en el edificio y son los
+	# aldeanos quienes lo acarrean al almacen (take_load / Villager.start_carry).
+	var amt2: float = (rec.amount if rec.amount > 0.0 else d.prod_amount) * rec.workers_present * rec.worker_efficiency
+	rec.pending += amt2
+
+
+# Consumo del entorno de un productor: extrae de un yacimiento (roca) o retira
+# una instancia de un solo uso (arbol). Devuelve las unidades obtenidas.
+func _take_environment(rec: BuildingRecord, d: BuildingDef, layer: ScatterLayer, amount: float) -> float:
+	var variants := _node_variants(d.resource_node)
+	if not layer.uses_deposits():
+		var taken := layer.consume_resource(rec.pos, d.work_radius, 1, variants)
+		return amount if taken > 0 else 0.0
+	# Yacimientos: si el acoplado se agoto, se busca el siguiente del radio.
+	if rec.deposit.is_empty() or not layer.deposit_is_active(rec.deposit):
+		rec.deposit = layer.find_deposit(rec.pos, d.work_radius, variants)
+	if rec.deposit.is_empty():
+		return 0.0
+	return layer.extract_deposit(rec.deposit, amount)
+
+
+# Rebrote opcional del entorno: cada REGROW_SECONDS, cada productor del entorno
+# devuelve UNA instancia consumida a su radio (si el sitio sigue libre).
+func _update_regrow(delta: float) -> void:
+	_regrow_timer += delta
+	if _regrow_timer < REGROW_SECONDS:
+		return
+	_regrow_timer = 0.0
+	for rec in _placed:
+		var d := get_def(rec.type)
+		if d == null or d.resource_node == &"":
+			continue
+		# Los que tienen cuadrilla replantan solos (SawmillCrew): no se rebrota
+		# por detras, o el sembrador no tendria sitio.
+		if d.crew_type != &"":
+			continue
+		var layer := _node_layer(d.resource_node)
+		if layer == null:
+			continue
+		layer.restore_resource(rec.pos, d.work_radius,
+			_node_variants(d.resource_node), _can_regrow_at)
+
+
+## True si un edificio o campo ocupa el punto: no se rebrota encima.
+func is_blocked_point(p: Vector2) -> bool:
+	for rec in _nearby(p):
+		var d := get_def(rec.type)
+		if d == null:
+			continue
+		if rec.pos.distance_to(p) < d.footprint * 0.5 + 0.25:
+			return true
+		if rec.field != null and rec.field_min != rec.field_max:
+			if p.x >= rec.field_min.x and p.x <= rec.field_max.x \
+					and p.y >= rec.field_min.y and p.y <= rec.field_max.y:
+				return true
+	return false
+
+
+# Filtro de rebrote: ni bajo edificios/campos ni en el agua.
+func _can_regrow_at(p: Vector2) -> bool:
+	return not is_blocked_point(p) and not Terrain.is_water(p)
 
 
 # Cosecha de las granjas. El cultivo crece solo (CropField, incluso de noche);
@@ -878,7 +1217,7 @@ func _update_farms(delta: float) -> void:
 		rec.crops.set_harvest(rec.harvest)
 		if applied > 0.0:
 			# La comida no entra al almacen aqui: se acumula y son los aldeanos
-			# quienes la acarrean (take_farm_food / Villager.start_carry).
+			# quienes la acarrean (take_load / Villager.start_carry).
 			var total := rec.amount * rec.workers_present * rec.worker_efficiency
 			rec.pending += total * applied
 		# Se recolocan cada 0.6 m de avance del frente, no por tramos fijos.
@@ -916,32 +1255,48 @@ func _planting_seconds(rec: BuildingRecord) -> float:
 	return _harvest_seconds(rec)
 
 
-## Coge hasta `amount` de comida ya cosechada de la granja en `farm_pos` para que
-## un aldeano la acarree. Devuelve {} si no hay nada, no es una granja o no
-## produce. El diccionario trae {amount, target, resource}.
-func take_farm_food(farm_pos: Vector2, amount: float) -> Dictionary:
-	var rec := _record_at(farm_pos)
+## Coge hasta `amount` de recurso ya producido del edificio en `building_pos`
+## para que un aldeano lo acarree. Devuelve {} si no hay nada o no produce. El
+## diccionario trae {amount, target, resource}. Vale para cualquier productor
+## (granja, aserradero, cantera).
+func take_load(building_pos: Vector2, amount: float) -> Dictionary:
+	var rec := _record_at(building_pos)
 	if rec == null or rec.pending <= 0.0:
 		return {}
 	var d := get_def(rec.type)
-	if d == null or not d.has_field or not d.can_produce():
+	if d == null or not d.can_produce():
 		return {}
-	# Durante la cosecha no se manda a nadie a media carga: se espera a juntar
-	# una carga completa (si no, el aldeano se iba tras 0.25 s de recogida, la
-	# cosecha se pausaba y un campo tardaba casi un dia en cosecharse una vez).
-	# Terminada la cosecha (cultivo ya res/embrado) se lleva lo que quede.
-	if rec.crops != null and is_instance_valid(rec.crops) \
-			and rec.crops.is_mature() and rec.pending < amount:
-		return {}
+	if d.has_field:
+		# Durante la cosecha no se manda a nadie a media carga: se espera a
+		# juntar una carga completa (si no, el aldeano se iba tras 0.25 s de
+		# recogida, la cosecha se pausaba y un campo tardaba casi un dia en
+		# cosecharse una vez). Terminada la cosecha se lleva lo que quede.
+		if rec.crops != null and is_instance_valid(rec.crops) \
+				and rec.crops.is_mature() and rec.pending < amount:
+			return {}
+	else:
+		# Productores continuos: se espera a la carga completa mientras siguen
+		# en marcha; si estan parados (sin recurso o sin turno) se lleva lo que
+		# haya, para no dejar sobras atrapadas.
+		if rec.pending < amount and _producer_running(rec):
+			return {}
 	var taken := minf(amount, rec.pending)
 	if taken <= 0.0:
 		return {}
 	rec.pending -= taken
 	return {
 		"amount": taken,
-		"target": _food_storage_target(rec.pos),
+		"target": _storage_target(String(d.prod_resource), rec.pos),
 		"resource": String(d.prod_resource),
 	}
+
+
+# True mientras un productor continuo puede seguir generando carga (turno
+# activo, trabajadores presentes y recurso natural disponible).
+func _producer_running(rec: BuildingRecord) -> bool:
+	if not _shift_active or rec.workers_present <= 0:
+		return false
+	return not rec.resource_depleted
 
 
 ## Los granjeros presentes avisan de donde estan para que la cosecha no se les
@@ -1005,6 +1360,45 @@ func random_field_point(farm_pos: Vector2, lane := 0) -> Vector2:
 # si un paso cruza la valla de algun campo y deslizarse a lo largo. Clave: la
 # posicion de la casa (unica por granja).
 static var _fences: Dictionary = {}
+
+
+# --- Colision de edificios (empuje) ---
+# El NavigationObstacle3D solo influye en la evitacion de los NavigationAgent, y
+# tanto los aldeanos como la mula mueven su posicion a mano, asi que atravesaban
+# los edificios. Este registro empuja fuera de la huella de cada edificio.
+# Entradas: {pos: Vector2, radius: float}. Solo edificios sin campo (las granjas
+# ya tienen su valla y el hueco de la casa).
+static var _blocks: Array = []
+
+
+static func clear_blocks() -> void:
+	_blocks.clear()
+
+
+static func register_block(pos: Vector2, radius: float) -> void:
+	_blocks.append({"pos": pos, "radius": radius})
+
+
+static func unregister_block(pos: Vector2) -> void:
+	for i in range(_blocks.size() - 1, -1, -1):
+		if (_blocks[i]["pos"] as Vector2).is_equal_approx(pos):
+			_blocks.remove_at(i)
+
+
+## Devuelve `p` empujado fuera de la huella de cualquier edificio.
+static func resolve_block(p: Vector2) -> Vector2:
+	for b in _blocks:
+		var center: Vector2 = b["pos"]
+		var radius: float = b["radius"]
+		var d := p - center
+		var dist := d.length()
+		if dist < radius:
+			if dist < 0.0001:
+				d = Vector2(0.0, -1.0)
+			else:
+				d = d / dist
+			p = center + d * radius
+	return p
 
 
 static func register_fence(pos: Vector2, center: Vector2, side: Vector2, back: Vector2,
@@ -1108,19 +1502,36 @@ static func gap_route(from: Vector2, to: Vector2) -> Array:
 	return [front, inside] if entering else [inside, front]
 
 
-# Almacen de comida (granero) mas cercano a `from`; si no hay ninguno, la propia
-# granja (la comida acaba igualmente en el almacen del pueblo).
-func _food_storage_target(from: Vector2) -> Vector2:
-	var best := from
+# Punto de entrega mas cercano a `from`: granero para comida, almacen para el
+# resto. Si no hay ninguno, el propio edificio productor.
+#
+# IMPORTANTE: se devuelve un punto en el BORDE del edificio (no su centro). Los
+# edificios llevan un NavigationObstacle3D en el centro y un aldeano que intenta
+# llegar justo al centro se queda atascado empujando en la puerta (nunca alcanza
+# la distancia de llegada). Apuntando a un punto del lado que mira a `from`, la
+# entrega se hace fuera del obstaculo.
+func _storage_target(resource: String, from: Vector2) -> Vector2:
+	var want: StringName = &"granary" if resource == Economy.FOOD_RESOURCE else &"warehouse"
+	var best: BuildingRecord = null
 	var best_d := INF
 	for rec in _placed:
 		var d := get_def(rec.type)
-		if d != null and d.storage_kind == &"granary":
+		if d != null and d.storage_kind == want:
 			var dist := rec.pos.distance_squared_to(from)
 			if dist < best_d:
 				best_d = dist
-				best = rec.pos
-	return best
+				best = rec
+	if best == null:
+		# Sin almacen: se entrega en la puerta del propio productor.
+		return from + Vector2(0.0, -1.0)
+	var bd := get_def(best.type)
+	var edge := (bd.footprint if bd != null else 1.0) * 0.5 + 0.5
+	var dir := from - best.pos
+	if dir.length_squared() < 0.0001:
+		dir = Vector2(0.0, -1.0)
+	else:
+		dir = dir.normalized()
+	return best.pos + dir * edge
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -1214,11 +1625,18 @@ func _unhandled_input(event: InputEvent) -> void:
 func _place() -> void:
 	var ground: Vector2 = _cam_rig.screen_to_ground(get_viewport().get_mouse_position())
 	var d := get_def(_pending)
+	# Acople: la cantera se apoya en la roca mas cercana.
+	ground = _snap_ground(ground, d)
+	if _relocating != null:
+		_finish_relocate(ground, d)
+		return
 	if not _is_valid(ground, _pending):
 		var reason := ""
 		var cls: String = Terrain.terrain_type(ground)
 		var biome_ok := _biome_matches(cls, d.biomes)
-		if not biome_ok:
+		if d.requires_deposit and _available_at(d, ground) <= 0:
+			reason = "El %s necesita una roca debajo" % d.display_name
+		elif not d.requires_deposit and not biome_ok:
 			reason = "Solo se puede construir en %s" % d.biomes_text()
 		elif not dev_free_build and not Economy.can_afford(d.cost):
 			reason = "Recursos insuficientes (%s)" % d.cost_text()
@@ -1257,15 +1675,28 @@ func _place() -> void:
 	add_child(node)
 	var rec := BuildingRecord.new(_pending, ground, _yaw, node, dev_free_build)
 	_placed.append(rec)
+	# Acople: la cantera queda unida a la roca exacta sobre la que se ha apoyado.
+	if d.requires_deposit:
+		var layer := _node_layer(d.resource_node)
+		if layer != null:
+			rec.deposit = layer.find_deposit(ground, 0.0, _node_variants(d.resource_node))
 	# Spatial hash: edificios sin campo se indexan al colocar. Los edificios con
 	# campo se indexan en _confirm_field (tras tener los bounds del campo).
 	if not d.has_field:
 		_add_to_grid(rec)
+		register_block(ground, d.footprint * 0.5)
 	_attach_production_timer(rec)
+	if d.crew_type == &"sawmill":
+		_spawn_crew(rec)
 	building_built.emit(_pending, ground)
 	# Solo se retira vegetacion dentro de la huella visual del modelo, con un
 	# pequeno margen. Antes el radio era footprint + 1 y despejaba demasiado.
-	place_clear_requested.emit(ground, d.footprint * 0.75)
+	# Los edificios apoyados en un yacimiento (cantera) no deben hundir su roca:
+	# solo se limpia la vegetacion.
+	if d.requires_deposit:
+		vegetation_clear_requested.emit(ground, d.footprint * 0.75)
+	else:
+		place_clear_requested.emit(ground, d.footprint * 0.75)
 	message_requested.emit("%s construido" % d.display_name)
 	if d.has_field:
 		# segundo paso: delimitar el campo de cultivo
@@ -1578,26 +2009,34 @@ func _base_height(pos: Vector2, footprint: float) -> float:
 		y += HEIGHT_SAMPLE_STEP
 	return h
 
-func _is_valid(pos: Vector2, type: StringName) -> bool:
+func _is_valid(pos: Vector2, type: StringName, ignore: BuildingRecord = null) -> bool:
 	var d := get_def(type)
-	if not _biome_matches(Terrain.terrain_type(pos), d.biomes):
+	# Los edificios que se apoyan en un yacimiento no miran el bioma: la roca
+	# (que solo aparece en tierra firme) es la que decide donde se pueden poner.
+	if not d.requires_deposit and not _biome_matches(Terrain.terrain_type(pos), d.biomes):
 		return false
+	# Acople: los edificios que se apoyan en un yacimiento necesitan una roca
+	# con reserva justo debajo. Si la capa aun no esta poblada no se puede
+	# comprobar, asi que se permite (el fantasma se valida al segundo siguiente).
+	if d.requires_deposit:
+		var layer := _node_layer(d.resource_node)
+		if layer != null and layer.is_populated() \
+				and layer.count_resource(pos, d.footprint * 0.5 + 0.6, _node_variants(d.resource_node)) <= 0:
+			return false
 	if not dev_free_build and not Economy.can_afford(d.cost):
 		return false
 	# Spatial hash: solo revisa edificios en la celda (o adyacentes) a pos.
 	# 9 celdas * ~1 edificio/celda = ~10 checks en vez de N (cientos).
 	for b in _nearby(pos):
+		if b == ignore:
+			continue
 		var other_def := get_def(b.type)
 		if other_def == null:
 			continue
-		# 1. Separacion entre casitas (aproximacion circular por huella).
-		# Deja 0.25 m entre modelos; dos casas pueden quedar juntas sin
-		# solaparse visualmente.
-		var min_dist := d.footprint * 0.5 + other_def.footprint * 0.5 + 0.25
-		# Si ambos tienen zona de actuacion (aserraderos), sus radios no pueden
-		# solaparse: dos aserraderos no comparten arboles.
-		if d.work_radius > 0.0 and other_def.work_radius > 0.0:
-			min_dist = d.work_radius + other_def.work_radius
+		# 1. Separacion entre edificios: solo lo justo para no solaparse. Dos
+		# huellas cuadradas de lado footprint se tocan con los centros a
+		# (fa+fb)/2, asi que ese es el minimo (aproximacion circular inscrita).
+		var min_dist := d.footprint * 0.5 + other_def.footprint * 0.5
 		if (b.pos - pos).length() < min_dist:
 			return false
 		# 2. Campo de una granja: no se puede construir encima. Se expande su

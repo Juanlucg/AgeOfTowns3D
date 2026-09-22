@@ -247,6 +247,21 @@ func _ready() -> void:
 		_sun = DirectionalLight3D.new()
 		_sun.shadow_enabled = true
 		get_parent().add_child(_sun)
+	# El suelo y el mar NO proyectan sombra. Son superficies enormes y casi
+	# planas: dentro del frustum del shadow map se auto-sombrean por completo y
+	# el borde del mapa deja una linea recta dura cruzando medio terreno. Con
+	# cast_shadow OFF siguen RECIBIENDO las sombras de arboles, rocas y
+	# edificios, pero desaparece la auto-sombra. Ver diagnostico en el borde
+	# recto de la captura a las 06:50 (una montana de ~7 m no proyecta una
+	# sombra de decenas de metros).
+	if _ground != null:
+		_ground.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	if _sea != null:
+		_sea.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# El shadow map direccional cubre un cuadrado alrededor de la camara. Con
+	# los 100 m por defecto, su borde cortaba el terreno visible. Se amplia para
+	# que la sombra de los objetos (arboles/edificios) llegue mas lejos.
+	_sun.directional_shadow_max_distance = 220.0
 
 	_moon = DirectionalLight3D.new()
 	_moon.light_color = Color(0.55, 0.62, 0.85)
@@ -299,6 +314,10 @@ func _make_particles(mesh: QuadMesh, pm: ParticleProcessMaterial, sx: float, sy:
 	var p := GPUParticles3D.new()
 	mesh.size = Vector2(sx, sy)
 	mesh.orientation = QuadMesh.FACE_Y
+	# La lluvia/nieve no proyectan sombra: son miles de quads sobre todo el mapa
+	# y ensombrecian el terreno como una cortina (el mismo borde recto duro que
+	# el suelo; ver diagnostico en _ready).
+	p.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var mat := StandardMaterial3D.new()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.vertex_color_use_as_albedo = true
@@ -389,6 +408,7 @@ func _make_splash_particles() -> GPUParticles3D:
 	p.process_material = pm
 	p.amount = 4000
 	p.lifetime = 0.55
+	p.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	p.emitting = false
 	p.visible = false
 	p.position = Vector3(half, 0.25, half)

@@ -82,6 +82,9 @@ var _carrying := false
 var carry_amount := 0.0
 var carry_resource := "comida"
 var _carry_visual: Node3D = null
+## Tarea puntual (cuadrilla del aserradero): el aldeano va a un punto y espera
+## alli a que el gestor le mande el siguiente paso, en vez de deambular.
+var _task_mode := false
 
 
 func initialize(home: Vector2, spawn_offset: Vector2, door_offset := Vector2.ZERO, housed := false) -> void:
@@ -175,6 +178,7 @@ func clear_work() -> void:
 	work_key = Vector2.ZERO
 	work_name = ""
 	_at_work = false
+	_task_mode = false
 	_choose_target()
 
 
@@ -189,6 +193,37 @@ func set_work_spot(spot: Vector2) -> void:
 
 func is_carrying() -> bool:
 	return _carrying
+
+
+## True mientras esta en su jornada laboral (aunque este yendo a una tarea).
+func is_on_shift() -> bool:
+	return _at_work
+
+
+## Manda al aldeano a un punto concreto como TAREA: al llegar se queda alli
+## esperando ordenes (nada de deambular). Lo usa la cuadrilla del aserradero.
+func move_to_task(point: Vector2) -> void:
+	_task_mode = true
+	_destination = point
+	_follow_stroke = {}
+	_path_hops = 0
+	_queue.clear()
+	_target = point
+	_set_navigation_target()
+
+
+## True si ya ha llegado al punto de la tarea actual.
+func task_arrived() -> bool:
+	var p := Vector2(global_position.x, global_position.z)
+	return p.distance_to(_destination) <= ARRIVAL_DISTANCE
+
+
+## Termina la tarea y vuelve al comportamiento normal (deambular/trabajar).
+func clear_task() -> void:
+	if not _task_mode:
+		return
+	_task_mode = false
+	_choose_target()
 
 
 ## Cuanto puede llevar de una vez (lo consulta Villagers al darle una carga).
@@ -230,8 +265,10 @@ func set_work_schedule(at_work: bool) -> void:
 	# Fuera de la jornada (noche) descansa en casa en vez de deambular.
 	_resting = not at_work
 	if _at_work:
+		_task_mode = false
 		_choose_target()
 	else:
+		_task_mode = false
 		_destination = _rest_target()
 		_follow_stroke = {}
 		_path_hops = 0
@@ -246,11 +283,13 @@ func set_meal(eating: bool) -> void:
 		return
 	_at_meal = eating
 	if _stay_home():
+		_task_mode = false
 		_destination = _rest_target()
 		_follow_stroke = {}
 		_path_hops = 0
 		_route_or_direct()
 	else:
+		_task_mode = false
 		_choose_target()
 	_update_visual_state()
 
@@ -410,6 +449,9 @@ func _process(delta: float) -> void:
 	# Las vallas del campo no se atraviesan: si el paso cruza una, se desliza a
 	# lo largo de ella (el hueco de la casa si deja pasar).
 	next = _avoid_fences(current, next, direction, speed * delta)
+	# Los edificios son solidos: se sale de su huella (el NavigationObstacle solo
+	# afecta a la evitacion del agente, que no usamos para movernos).
+	next = Buildings.resolve_block(next)
 	if next.distance_squared_to(current) < 0.000001:
 		return
 	direction = current.direction_to(next)
@@ -426,7 +468,11 @@ func _process(delta: float) -> void:
 			# Si venia siguiendo un camino, reintenta su plan (los puntos del
 			# camino nunca pisan agua) antes que abandonarlo y deambular.
 			if not _route_via_path():
-				_choose_target()
+				if _task_mode:
+					_target = _destination
+					_set_navigation_target()
+				else:
+					_choose_target()
 		return
 	var ground_h := Terrain.height_at(next)
 	if on_bridge_next:
@@ -557,6 +603,12 @@ func _on_target_reached() -> void:
 	# Quedan puntos de paso (hueco de la valla): va al siguiente.
 	if not _queue.is_empty():
 		_target = _queue.pop_front()
+		_set_navigation_target()
+		return
+	# Tarea puntual: se queda en el punto a que le mande el gestor.
+	if _task_mode:
+		_follow_stroke = {}
+		_wait_time = randf_range(0.4, 0.9)
 		_set_navigation_target()
 		return
 	# Destino final: no seguir enganchando caminos (evita dar vueltas al llegar).

@@ -20,11 +20,19 @@ var _last_screen_pos := Vector2.ZERO
 var _demolish_button: Button = null
 var _assign_button: Button = null
 var _release_button: Button = null
+# Cantera sin piedra: boton para reubicarla sobre otra roca.
+var _relocate_button: Button = null
+var _relocate_box: VBoxContainer = null
 var _worker_status_labels: Array[Label] = []
 # Barra de capacidad (graneros): se refresca en vivo con Economy.changed.
 var _capacity_bar: ProgressBar = null
 var _capacity_value: Label = null
 var _capacity_resource: StringName = &""
+# Recurso del entorno en el radio (aserradero/cantera) y carga pendiente de
+# acarreo: se refrescan cada frame con el menu abierto (cambian con la
+# produccion y con los aldeanos que van y vienen).
+var _resource_value: Label = null
+var _pending_value: Label = null
 # Seccion de habitantes de una casa: se repuebla en vivo con population_changed.
 var _residents_box: VBoxContainer = null
 # Botones de cultivo de una granja (id -> Button) para el handler manual de _input.
@@ -71,11 +79,18 @@ func show_for(record: BuildingRecord, at: Vector2) -> void:
 	_last_screen_pos = at
 	_worker_status_labels.clear()
 	_crop_buttons.clear()
+	_demolish_button = null
+	_assign_button = null
+	_release_button = null
+	_relocate_button = null
+	_relocate_box = null
 	# Los nodos de la barra anterior se van a liberar con el contenido viejo:
 	# mejor olvidarlos para que Economy.changed no toque nodos muertos.
 	_capacity_bar = null
 	_capacity_value = null
 	_capacity_resource = &""
+	_resource_value = null
+	_pending_value = null
 	_residents_box = null
 	# Click-catcher fullscreen para absorber clics fuera del menu.
 	if _catcher == null:
@@ -121,9 +136,14 @@ func show_for(record: BuildingRecord, at: Vector2) -> void:
 	if def.capacity > 0:
 		_content.add_child(HSeparator.new())
 		_build_capacity(_content, def.capacity, def.capacity_resource)
+	if def.can_produce():
+		_content.add_child(HSeparator.new())
+		_build_production_state(_content, def, record)
 	if def.worker_count > 0:
 		_content.add_child(HSeparator.new())
 		_build_workers(_content, def, record.workers, record.pos)
+	if def.requires_deposit:
+		_build_relocate(_content)
 	_content.add_child(HSeparator.new())
 	_build_action_bar(_content)
 
@@ -151,6 +171,11 @@ func _process(_delta: float) -> void:
 	var p := _record.pos
 	_last_screen_pos = _cam.world_to_screen(Vector3(p.x, Terrain.height_at(p), p.y))
 	_place_panel(_last_screen_pos)
+	# Recurso del radio y carga pendiente cambian en vivo (produccion/aldeanos).
+	if _buildings != null:
+		var def := _buildings.get_def(_record.type)
+		if def != null and def.can_produce():
+			_refresh_production_state(def, _record)
 
 
 func hide_menu() -> void:
@@ -186,6 +211,11 @@ func _input(event: InputEvent) -> void:
 		if _release_button != null and _button_rect(_release_button).has_point(event.position):
 			if _villagers != null:
 				_villagers.release_worker(_record.pos)
+			get_viewport().set_input_as_handled()
+			return
+		if _relocate_button != null and _relocate_button.visible \
+				and _button_rect(_relocate_button).has_point(event.position):
+			_on_relocate_pressed()
 			get_viewport().set_input_as_handled()
 			return
 		if _demolish_button != null and is_instance_valid(_demolish_button):
@@ -311,6 +341,56 @@ func _refresh_capacity() -> void:
 	_capacity_bar.value = used
 	if _capacity_value != null and is_instance_valid(_capacity_value):
 		_capacity_value.text = "%d/%d" % [used, cap]
+
+
+# Estado de produccion: recurso natural en el radio (si el edificio lo consume)
+# y carga acumulada pendiente de acarreo.
+func _build_production_state(parent: VBoxContainer, def: BuildingDef, record: BuildingRecord) -> void:
+	if def.resource_node != &"":
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 6)
+		parent.add_child(row)
+		var label := Label.new()
+		label.text = "Recurso en el radio:"
+		label.add_theme_font_size_override("font_size", 12)
+		label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(label)
+		_resource_value = Label.new()
+		_resource_value.add_theme_font_size_override("font_size", 12)
+		row.add_child(_resource_value)
+	var prow := HBoxContainer.new()
+	prow.add_theme_constant_override("separation", 6)
+	parent.add_child(prow)
+	var pending_label := Label.new()
+	pending_label.text = "Pendiente de acarreo:"
+	pending_label.add_theme_font_size_override("font_size", 12)
+	pending_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	prow.add_child(pending_label)
+	_pending_value = Label.new()
+	_pending_value.add_theme_font_size_override("font_size", 12)
+	prow.add_child(_pending_value)
+	_refresh_production_state(def, record)
+
+
+func _refresh_production_state(def: BuildingDef, record: BuildingRecord) -> void:
+	if _resource_value != null and is_instance_valid(_resource_value):
+		var n := -1
+		if _buildings != null:
+			n = _buildings.resource_in_radius(record)
+		if n < 0:
+			_resource_value.text = "—"
+			_resource_value.add_theme_color_override("font_color", Color(1, 1, 1, 0.5))
+		elif n == 0:
+			_resource_value.text = "0 (%s agotados)" % _buildings.resource_label(def.resource_node)
+			_resource_value.add_theme_color_override("font_color", Color(1.0, 0.45, 0.35))
+		else:
+			_resource_value.text = str(n)
+			_resource_value.add_theme_color_override("font_color", Color(0.55, 0.85, 0.45))
+	if _pending_value != null and is_instance_valid(_pending_value):
+		_pending_value.text = _fmt(record.pending)
+	# El aviso/boton de reubicar solo aparece cuando el yacimiento se agoto.
+	if _relocate_box != null and is_instance_valid(_relocate_box) and _buildings != null:
+		_relocate_box.visible = _buildings.needs_relocate(record)
 
 
 # Habitantes de una casa (edificios con housing_capacity > 0). Crea el
@@ -461,6 +541,29 @@ func _on_workers_changed(position: Vector2, count: int) -> void:
 			"font_color", Color(0.45, 1.0, 0.55) if assigned else Color(1.0, 0.75, 0.4))
 
 
+# Cantera sin piedra: aviso y boton para volver a colocarla sobre otra roca.
+# El bloque entero se oculta mientras el yacimiento siga teniendo reserva.
+func _build_relocate(parent: VBoxContainer) -> void:
+	_relocate_box = VBoxContainer.new()
+	_relocate_box.add_theme_constant_override("separation", 6)
+	parent.add_child(_relocate_box)
+	_relocate_box.add_child(HSeparator.new())
+	var note := Label.new()
+	note.text = "La roca se ha agotado."
+	note.add_theme_font_size_override("font_size", 12)
+	note.add_theme_color_override("font_color", Color(1.0, 0.62, 0.38))
+	_relocate_box.add_child(note)
+	var button := Button.new()
+	_relocate_button = button
+	button.text = "Buscar otra roca"
+	button.mouse_filter = Control.MOUSE_FILTER_STOP
+	button.add_theme_font_size_override("font_size", 12)
+	button.custom_minimum_size = Vector2(160, 28)
+	button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_relocate_box.add_child(button)
+	_relocate_box.visible = false
+
+
 func _build_action_bar(parent: VBoxContainer) -> void:
 	# Boton compacto, fijo (no se estira). SIZE_SHRINK_CENTER hace que el
 	# VBoxContainer no le fuerce a llenar el ancho: se queda en su minimo.
@@ -488,6 +591,15 @@ func _on_demolish_pressed() -> void:
 	var rec := _record
 	hide_menu()
 	_buildings.demolish(rec)
+
+
+# Reubica la cantera en otra roca: cierra el menu y entra en modo colocacion.
+func _on_relocate_pressed() -> void:
+	if _record == null or _buildings == null:
+		return
+	var rec := _record
+	hide_menu()
+	_buildings.start_relocate(rec)
 
 
 # Cambia el cultivo de la granja seleccionada y rehace el menu para reflejar el

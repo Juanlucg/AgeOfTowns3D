@@ -82,12 +82,18 @@ func _process(delta: float) -> void:
 			if is_instance_valid(worker) and worker.is_at_work():
 				present += 1
 		_emit_workers_present(group["position"], present)
-		# Granjas: los presentes cogen la comida cosechada y la llevan al
-		# almacen; al irse dejan de contar como presentes y la cosecha se pausa.
 		var def := _buildings.get_def(group["type"])
-		if def != null and def.has_field:
-			_pick_farm_loads(group)
+		if def == null or not def.can_produce():
+			continue
+		# Cualquier productor (granja, aserradero, cantera): un aldeano presente
+		# coge la carga acumulada y la lleva al almacen correspondiente.
+		_pick_loads(group)
+		if def.has_field:
 			_report_farm_workers(group)
+		# Edificios con cuadrilla (aserradero): mantener su grupo de trabajadores
+		# al dia para que el ciclo lenador/sembrador funcione.
+		if def.crew_type != &"":
+			_sync_crew(group)
 
 
 # Avisa a Buildings de donde estan los granjeros presentes, para que la cosecha
@@ -101,17 +107,30 @@ func _report_farm_workers(group: Dictionary) -> void:
 	_buildings.report_farm_workers(group["position"], positions)
 
 
-# Da una carga de comida como mucho a UN granjero presente por tick (los demas
-# siguen cosechando; si no, se iban todos a la vez y el campo se quedaba solo).
-func _pick_farm_loads(group: Dictionary) -> void:
+# Da una carga (de comida, madera o piedra) como mucho a UN aldeano presente
+# por tick (los demas siguen trabajando; si no, se iban todos a la vez y el
+# puesto se quedaba solo).
+func _pick_loads(group: Dictionary) -> void:
 	for worker in group["workers"]:
 		if not is_instance_valid(worker) or worker.is_carrying() or not worker.is_at_work():
 			continue
-		var load := _buildings.take_farm_food(group["position"], worker.carry_capacity())
+		var load := _buildings.take_load(group["position"], worker.carry_capacity())
 		if load.is_empty():
 			return
 		worker.start_carry(load["target"], load["amount"], load["resource"])
 		return
+
+
+# Pasa a la cuadrilla del aserradero sus trabajadores actuales y si hay turno.
+func _sync_crew(group: Dictionary) -> void:
+	var rec := _buildings.record_at(group["position"])
+	if rec == null or rec.node == null or not is_instance_valid(rec.node):
+		return
+	var crew = rec.node.get_node_or_null("SawmillCrew")
+	if crew == null:
+		return
+	crew.set_workers(group["workers"])
+	crew.set_shift(_daytime and not _meal_time)
 
 
 func _emit_workers_present(position: Vector2, present: int) -> void:

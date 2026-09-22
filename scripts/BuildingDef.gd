@@ -48,6 +48,17 @@ const BIOME_BY_NAME := {
 # Radio de la zona de actuacion (aserradero). 0 = sin zona. Dos edificios con
 # zona no pueden solaparla.
 @export var work_radius: float = 0.0
+# Recurso natural que consume del radio de trabajo: &"arboles" (Vegetation) o
+# &"rocas" (Rocks). &"" = no consume nada del entorno (produce "de la nada").
+# Si no queda recurso en el radio, el edificio deja de producir.
+@export var resource_node: StringName = &""
+# El edificio solo se puede colocar ENCIMA de un yacimiento (roca). El fantasma
+# se pega a la roca mas cercana y sin roca no hay colocacion valida.
+@export var requires_deposit: bool = false
+# Cuadrilla que trabaja el edificio de forma animada en vez de producir por
+# timer: &"" (ninguna) o &"sawmill" (lenador derriba/arrastra/corta y sembrador
+# replanta). Ver SawmillCrew.
+@export var crew_type: StringName = &""
 # Orden en el menu de construccion (menor primero). Determina tambien que
 # atajo 1-7 le corresponde.
 @export var order: int = 0

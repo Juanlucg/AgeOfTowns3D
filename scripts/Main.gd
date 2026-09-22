@@ -34,11 +34,16 @@ func _ready() -> void:
 	# partida debe empezar con el estado económico inicial.
 	Economy.reset()
 	Economy.bind_day_night(day_night)
+	# Los productores del entorno (aserradero, cantera) necesitan las capas de
+	# vegetacion y rocas para contar/consumir su recurso del radio de trabajo.
+	buildings.bind_scatter(vegetation, rocks)
 
 	buildings.message_requested.connect(hud.show_message)
 	buildings.building_built.connect(minimap._on_building)
 	buildings.place_clear_requested.connect(vegetation.clear_near)
 	buildings.place_clear_requested.connect(rocks.clear_near)
+	# La cantera se apoya en su roca: solo se limpia la vegetacion de encima.
+	buildings.vegetation_clear_requested.connect(vegetation.clear_near)
 	paths.message_requested.connect(hud.show_message)
 	paths.path_clear_requested.connect(vegetation.clear_near)
 	paths.path_clear_requested.connect(rocks.clear_near)

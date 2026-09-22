@@ -24,9 +24,15 @@ func show_for(def: BuildingDef, at: Vector2) -> void:
 		else:
 			var amt := _format_amount(def.prod_amount)
 			_add_row(vbox, "Produce", "+%s %s cada %ss" % [amt, String(def.prod_resource), _format_amount(def.prod_interval)])
+	if def.resource_node != &"":
+		var node_name := "árboles" if def.resource_node == &"arboles" else "rocas"
+		_add_row(vbox, "Consume", "%s del radio" % node_name)
+	if def.requires_deposit:
+		_add_row(vbox, "Colocar", "encima de una roca")
 	if def.hint != "":
 		_add_row(vbox, "", def.hint)
-	_add_row(vbox, "Biomas", def.biomes_text())
+	if not def.requires_deposit:
+		_add_row(vbox, "Biomas", def.biomes_text())
 	position = at
 	visible = true
 

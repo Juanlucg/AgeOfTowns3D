@@ -24,7 +24,9 @@ var crop: String = ""           # tipo de cultivo en granjas (trigo/zanahoria/ba
 var harvest: float = 0.0         # granjas: trigo ya quitado 0..1 (limitado a los granjeros)
 var harvest_time: float = 0.0    # granjas: avance deseado 0..1 (por tiempo)
 var worker_positions := PackedVector2Array()  # granjas: posicion de los granjeros presentes
-var pending: float = 0.0         # granjas: comida cosechada esperando a que un aldeano la acarree
+var pending: float = 0.0         # cualquier productor: recurso esperando a que un aldeano lo acarree
+var resource_depleted: bool = false  # productores del entorno: ya no queda recurso en el radio
+var deposit: Dictionary = {}     # cantera: yacimiento (roca) al que esta acoplada
 var planting: float = 1.0        # granjas: progreso de siembra 0..1 (1 = no hay siembra pendiente)
 var spread_harvest: float = -1.0  # granjas: frente (m) en que se repartio a los granjeros; -1 = en la casa
 var dev: bool = false            # modo dev: gratis y sin produccion

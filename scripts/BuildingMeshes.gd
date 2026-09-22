@@ -10,6 +10,7 @@ const STONE_COLOR := Color(0.50, 0.50, 0.52)
 const STEEL_COLOR := Color(0.72, 0.72, 0.78)
 const SOIL_COLOR := Color(0.40, 0.28, 0.14)
 const WATER_COLOR := Color(0.22, 0.46, 0.62)
+const ROPE_COLOR := Color(0.72, 0.64, 0.42)
 
 # --- Paleta de la granja: paja calida, yeso crema, viga oscura ---
 const THATCH_COLOR := Color(0.82, 0.68, 0.41)    # paja al sol
@@ -23,6 +24,8 @@ const TIMBER_COLOR := Color(0.30, 0.19, 0.11)    # entramado de madera
 const DOOR_COLOR := Color(0.45, 0.29, 0.15)
 const COTTAGE_SCENE := preload("res://assets/buildings/cottage/cottage.fbx")
 const COTTAGE_SCALE := Vector3(1.5, 1.5, 1.5)
+const SAWMILL_SCENE := preload("res://assets/buildings/aserradero/aserradero.fbx")
+const SAWMILL_SCALE := Vector3(1.45, 1.45, 1.45)
 
 
 # `mat` es el material a aplicar; si es null, se usa el color solido del tipo.
@@ -292,56 +295,82 @@ static func _vertex_color_mat() -> StandardMaterial3D:
 	return _vertex_mat
 
 
+# Modelo importado del aserradero (FBX). Ya viene a escala (~1 m de huella y la
+# base apoyada en y=0), igual que la casa importada.
 static func sawmill(mat: Material) -> Node3D:
-	var n := Node3D.new()
-	var wood := mat if mat != null else _mat(WOOD_COLOR)
-	var roof_mat := mat if mat != null else _mat(ROOF_COLOR)
-	var steel := mat if mat != null else _mat(STEEL_COLOR)
-	var slab := _box(Vector3(1.0, 0.08, 1.0))
-	n.add_child(_part(slab, wood, Vector3(0, 0.04, 0)))
-	for corner in [Vector2(-0.44, -0.44), Vector2(0.44, -0.44), Vector2(-0.44, 0.44), Vector2(0.44, 0.44)]:
-		var post := _box(Vector3(0.06, 0.75, 0.06))
-		n.add_child(_part(post, wood, Vector3(corner.x, 0.42, corner.y)))
-	var lr := _box(Vector3(0.55, 0.06, 1.0))
-	var left := _part(lr, wood, Vector3(-0.22, 0.86, 0))
-	left.rotate_z(0.55)
-	n.add_child(left)
-	var rr := _box(Vector3(0.55, 0.06, 1.0))
-	var right := _part(rr, wood, Vector3(0.22, 0.86, 0))
-	right.rotate_z(-0.55)
-	n.add_child(right)
-	var ridge := _box(Vector3(0.1, 0.05, 1.02))
-	n.add_child(_part(ridge, wood, Vector3(0, 0.98, 0)))
-	var top := _box(Vector3(0.75, 0.12, 0.45))
-	n.add_child(_part(top, wood, Vector3(0, 0.5, 0)))
-	var leg_box := _box(Vector3(0.04, 0.45, 0.04))
-	for leg in [Vector2(-0.32, -0.16), Vector2(0.32, -0.16), Vector2(-0.32, 0.16), Vector2(0.32, 0.16)]:
-		n.add_child(_part(leg_box, wood, Vector3(leg.x, 0.25, leg.y)))
-	for side in [-1.0, 1.0]:
-		var log := _cylinder(0.06, 0.06, 0.3, 8)
-		var log_mi := _part(log, roof_mat, Vector3(0.16 * side, 0.66, 0))
-		log_mi.rotate_x(PI * 0.5)
-		n.add_child(log_mi)
-	var blade := _cylinder(0.09, 0.09, 0.03, 12)
-	var blade_mi := _part(blade, steel, Vector3(0, 0.68, 0))
-	blade_mi.rotate_z(PI * 0.5)
-	n.add_child(blade_mi)
-	return n
+	var instance := SAWMILL_SCENE.instantiate() as Node3D
+	if instance == null:
+		push_error("BuildingMeshes.sawmill: el modelo importado no es un Node3D")
+		return Node3D.new()
+	instance.scale = SAWMILL_SCALE
+	if mat != null:
+		_apply_material_recursive(instance, mat)
+	return instance
 
 
+# Cantera: castillete de vigas de madera con escalera, montado ENCIMA de una
+# roca (el yacimiento). El armazon queda abierto en el centro para dejar ver la
+# piedra de la que extraen los aldeanos: jib con roldana y cuerda para subir los
+# bloques, escalera de mano y riostras en las esquinas.
 static func quarry(mat: Material) -> Node3D:
 	var n := Node3D.new()
+	var wood := mat if mat != null else _mat(WOOD_COLOR)
+	var beam := mat if mat != null else _mat(TIMBER_COLOR)
 	var stone := mat if mat != null else _mat(STONE_COLOR)
-	var base := _box(Vector3(1.05, 0.15, 1.05))
-	n.add_child(_part(base, stone, Vector3(0, 0.075, 0)))
-	for r in [
-		[Vector3(-0.35, 0.32, -0.32), Vector3(0.4, 0.32, 0.35)],
-		[Vector3(0.38, 0.35, 0.28), Vector3(0.45, 0.4, 0.4)],
-		[Vector3(0.0, 0.3, -0.1), Vector3(0.3, 0.28, 0.3)],
-		[Vector3(-0.1, 0.35, 0.4), Vector3(0.28, 0.3, 0.28)],
-	]:
-		var rock := _box(r[1])
-		n.add_child(_part(rock, stone, r[0]))
+	var rope := mat if mat != null else _mat(ROPE_COLOR)
+
+	# Cuatro patas en ligera piramide: dejan hueco en el centro para la roca.
+	var h := 1.45
+	for sx in [-1.0, 1.0]:
+		for sz in [-1.0, 1.0]:
+			var leg := _part(_box(Vector3(0.09, h, 0.09)), wood,
+				Vector3(sx * 0.52, h * 0.5, sz * 0.52))
+			leg.rotate_x(-sz * 0.10)
+			leg.rotate_z(sx * 0.10)
+			n.add_child(leg)
+
+	# Marco superior (cuatro vigas).
+	var beam_z := _box(Vector3(0.08, 0.08, 1.0))
+	n.add_child(_part(beam_z, beam, Vector3(-0.46, h, 0)))
+	n.add_child(_part(beam_z, beam, Vector3(0.46, h, 0)))
+	var beam_x := _box(Vector3(1.0, 0.08, 0.08))
+	n.add_child(_part(beam_x, beam, Vector3(0, h, -0.46)))
+	n.add_child(_part(beam_x, beam, Vector3(0, h, 0.46)))
+
+	# Tornapuntas cruzadas en las dos caras laterales.
+	for sx in [-1.0, 1.0]:
+		var brace := _part(_box(Vector3(0.06, 1.25, 0.06)), wood,
+			Vector3(sx * 0.50, 0.72, -0.50))
+		brace.rotate_z(sx * 0.55)
+		n.add_child(brace)
+
+	# Viga voladiza (jib) con roldana y cuerda: sube los bloques de piedra.
+	var jib := _part(_box(Vector3(1.15, 0.09, 0.09)), beam, Vector3(0.18, h + 0.12, 0.0))
+	jib.rotate_z(0.14)
+	n.add_child(jib)
+	var wheel := _part(_cylinder(0.09, 0.09, 0.05, 10), stone, Vector3(0.72, h + 0.20, 0))
+	wheel.rotate_z(PI * 0.5)
+	n.add_child(wheel)
+	n.add_child(_part(_box(Vector3(0.025, 0.85, 0.025)), rope, Vector3(0.72, h - 0.24, 0)))
+	n.add_child(_part(_box(Vector3(0.22, 0.18, 0.22)), stone, Vector3(0.72, h - 0.72, 0)))
+
+	# Escalera de mano apoyada en el castillete.
+	var ladder := Node3D.new()
+	var rail := _box(Vector3(0.05, 1.5, 0.05))
+	ladder.add_child(_part(rail, wood, Vector3(-0.17, 0.75, 0)))
+	ladder.add_child(_part(rail, wood, Vector3(0.17, 0.75, 0)))
+	var rung := _box(Vector3(0.38, 0.05, 0.05))
+	for i in 6:
+		ladder.add_child(_part(rung, wood, Vector3(0, 0.18 + float(i) * 0.24, 0)))
+	ladder.position = Vector3(0.52, 0.0, 0.62)
+	ladder.rotate_x(-0.18)
+	n.add_child(ladder)
+
+	# Bloques de piedra ya cortados al pie.
+	var block := _box(Vector3(0.24, 0.16, 0.20))
+	n.add_child(_part(block, stone, Vector3(-0.55, 0.08, 0.52)))
+	n.add_child(_part(block, stone, Vector3(-0.55, 0.24, 0.52)))
+	n.add_child(_part(block, stone, Vector3(-0.30, 0.08, 0.56)))
 	return n
 
 
@@ -433,6 +462,59 @@ static func plaza(mat: Material) -> Node3D:
 		seat.rotate_y(-ang)
 		n.add_child(seat)
 		n.add_child(_part(leg, stone, dir * 0.85 + Vector3(0.0, 0.07, 0.0)))
+	return n
+
+
+# --- Piezas de la cuadrilla del aserradero (mula, tronco y brote) ---
+# No proyectan sombra: son props cosmeticos pequenos y su sombra provocaba
+# artefactos (manchas/bordes duros) segun el angulo del sol. Ver _no_shadow.
+
+static func _no_shadow(root: Node) -> void:
+	if root is GeometryInstance3D:
+		(root as GeometryInstance3D).cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	for c in root.get_children():
+		_no_shadow(c)
+
+
+# Mula de carga: animal pequeno (a escala de los aldeanos) que acompana al
+# lenador y tira del tronco hasta el aserradero.
+static func mule() -> Node3D:
+	var n := Node3D.new()
+	var brown := _mat(Color(0.42, 0.30, 0.20))
+	var dark := _mat(Color(0.26, 0.19, 0.13))
+	n.add_child(_part(_box(Vector3(0.14, 0.14, 0.30)), brown, Vector3(0, 0.25, 0)))
+	var neck := _part(_box(Vector3(0.07, 0.14, 0.07)), dark, Vector3(0, 0.33, -0.14))
+	neck.rotate_x(-0.4)
+	n.add_child(neck)
+	n.add_child(_part(_box(Vector3(0.06, 0.06, 0.13)), brown, Vector3(0, 0.41, -0.20)))
+	for sx in [-1.0, 1.0]:
+		for sz in [-1.0, 1.0]:
+			n.add_child(_part(_box(Vector3(0.04, 0.19, 0.04)), dark,
+				Vector3(sx * 0.045, 0.095, sz * 0.11)))
+	var tail := _part(_box(Vector3(0.02, 0.12, 0.02)), dark, Vector3(0, 0.29, 0.15))
+	tail.rotate_x(0.5)
+	n.add_child(tail)
+	_no_shadow(n)
+	return n
+
+
+# Tronco recien derribado, pequeno. El origen del nodo esta en la base (el mesh
+# sube), de modo que al girarlo cae pivoteando sobre el suelo.
+static func log_piece() -> Node3D:
+	var n := Node3D.new()
+	n.add_child(_part(_cylinder(0.055, 0.06, 0.55, 8), _mat(WOOD_COLOR), Vector3(0, 0.275, 0)))
+	_no_shadow(n)
+	return n
+
+
+# Brote joven que crece hasta ser un arbol de la capa de vegetacion.
+static func sapling() -> Node3D:
+	var n := Node3D.new()
+	var leaf := _mat(Color(0.16, 0.32, 0.14))
+	n.add_child(_part(_cylinder(0.04, 0.06, 0.5, 5), _mat(WOOD_COLOR), Vector3(0, 0.25, 0)))
+	n.add_child(_part(_cylinder(0.0, 0.30, 0.55, 6), leaf, Vector3(0, 0.62, 0)))
+	n.add_child(_part(_cylinder(0.0, 0.22, 0.48, 6), leaf, Vector3(0, 0.98, 0)))
+	_no_shadow(n)
 	return n
 
 

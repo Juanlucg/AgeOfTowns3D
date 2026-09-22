@@ -7,12 +7,16 @@ class_name Rocks
 
 const STEP := 1.3
 const JITTER := 0.5
-const FOOTHILL_PROB := 0.03
-const FOREST_PROB := 0.015
-const PLAINS_PROB := 0.01
+const FOOTHILL_PROB := 0.006
+const FOREST_PROB := 0.003
+const PLAINS_PROB := 0.0015
+const MOUNTAIN_PROB := 0.02
 const FOOTHILL_HEIGHT := 2.6
-const SCALE_MIN := 0.2
-const SCALE_MAX := 0.45
+const SCALE_MIN := 0.6
+const SCALE_MAX := 1.2
+## Piedra que rinde cada roca antes de agotarse (yacimiento). La cantera extrae
+## de la roca mas cercana en su radio de trabajo.
+const DEPOSIT_STONE := 200.0
 
 const ROCK_COLOR := Color(0.52, 0.50, 0.47)
 const ROCK_COLOR_CRAG := Color(0.47, 0.45, 0.43)
@@ -27,6 +31,8 @@ var _slab_result: Array[Transform3D] = []
 
 
 func _ready() -> void:
+	# Cada roca es un yacimiento: rinde varias extracciones antes de hundirse.
+	set_deposit_amount(DEPOSIT_STONE)
 	_start_scatter([
 		_build_rock(_mesh_rng(201), 0.7, ROCK_COLOR),
 		_build_rock(_mesh_rng(202), 1.0, ROCK_COLOR_CRAG),
@@ -62,6 +68,9 @@ func _populate() -> void:
 				Terrain.CLASS_PLAINS:
 					h = Terrain.height_at(pos)
 					prob = FOOTHILL_PROB if h > FOOTHILL_HEIGHT else PLAINS_PROB
+				Terrain.CLASS_ROCK:
+					h = Terrain.height_at(pos)
+					prob = MOUNTAIN_PROB
 			if prob > 0.0 and rng.randf() < prob:
 				if cls == Terrain.CLASS_FOREST:
 					h = Terrain.height_at(pos)
