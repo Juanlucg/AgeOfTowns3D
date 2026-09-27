@@ -31,11 +31,24 @@ var _spatial: Dictionary = {}
 ## contarlas como recurso disponible y para poder restaurar (rebrote).
 var _consumed: Dictionary = {}
 
+## Instancias asignadas temporalmente a un consumidor (p. ej. una cuadrilla que
+## ya va de camino al arbol). Evita que dos productores reclamen el mismo indice.
+var _reserved: Dictionary = {}
+
 ## Posicion XZ de cada instancia: MultiMeshInstance3D -> PackedVector2Array.
 ## Se guarda aparte de la MultiMesh porque leer de ella cruza al servidor de
 ## render y no es fiable en headless; ademas evita decenas de miles de
 ## get_instance_transform por consulta de radio.
 var _positions: Dictionary = {}
+
+## Escala uniforme de cada instancia: MultiMeshInstance3D -> PackedFloat32Array.
+## Se guarda junto a la posicion para poder amoldar los edificios que se apoyan
+## en un yacimiento (cantera) al tamano de su roca sin leer de la MultiMesh.
+var _scales: Dictionary = {}
+
+## Altura maxima sobre el suelo de cada instancia de yacimiento, escalada por
+## su transform. La cantera la usa para situar el marco apenas sobre la piedra.
+var _heights: Dictionary = {}
 
 ## Capas de yacimiento (rocas): extracciones que rinde cada instancia antes de
 ## agotarse. 0 = uso unico (comportamiento de la vegetacion). Lo fija la
@@ -44,6 +57,14 @@ var deposit_amount := 0.0
 ## Reserva restante por instancia: MultiMeshInstance3D -> Array[float]. Se crea
 ## de forma perezosa la primera vez que se consulta la capa.
 var _reserves: Dictionary = {}
+
+## Metrica de cada yacimiento (roca): MultiMeshInstance3D -> PackedFloat32Array.
+## Cada subclase la define con [method set_deposit_metric]: para las rocas es el
+## radio en planta (m) que ocupa la instancia, que Buildings usara para decidir
+## como de ancho y alto debe ser el castillete que la horquilla. Vacio = sin
+## metrica (los consumidores asumen 0 y usan el tamano por defecto).
+var deposit_metric: float = 0.0
+var _metrics: Dictionary = {}
 
 ## Id de la tarea del WorkerThreadPool que puebla la capa. Se guarda para
 ## esperarla en _exit_tree: si no, salir del juego durante la generacion deja
@@ -96,9 +117,13 @@ func _create_empty_mmi(mesh: ArrayMesh) -> MultiMeshInstance3D:
 	return mmi
 
 
-func _assign_transforms(mmi: MultiMeshInstance3D, transforms: Array[Transform3D]) -> void:
+## Vuelca transforms de una variante y construye su indice espacial. `metric_base`
+## y `height_base` describen radio y altura sobre el suelo a escala 1.0.
+func _assign_transforms(mmi: MultiMeshInstance3D, transforms: Array[Transform3D],
+		metric_base := -1.0, height_base := 0.0) -> void:
 	if mmi == null or transforms.is_empty():
 		return
+	var base := deposit_metric if metric_base < 0.0 else metric_base
 	var mm := mmi.multimesh
 	mm.instance_count = transforms.size()
 	# Se vuelca en una sola pasada y de paso se construye el indice espacial por
@@ -107,11 +132,20 @@ func _assign_transforms(mmi: MultiMeshInstance3D, transforms: Array[Transform3D]
 	var grid: Dictionary = {}
 	var positions := PackedVector2Array()
 	positions.resize(transforms.size())
+	var scales := PackedFloat32Array()
+	scales.resize(transforms.size())
+	var metrics := PackedFloat32Array()
+	metrics.resize(transforms.size())
+	var heights := PackedFloat32Array()
+	heights.resize(transforms.size())
 	for i in transforms.size():
 		var t: Transform3D = transforms[i]
 		mm.set_instance_transform(i, t)
 		var origin := t.origin
 		positions[i] = Vector2(origin.x, origin.z)
+		scales[i] = t.basis.get_scale().x
+		metrics[i] = base * scales[i]
+		heights[i] = height_base * scales[i]
 		var cell := Vector2i(int(floor(origin.x / CLEAR_CELL)), int(floor(origin.z / CLEAR_CELL)))
 		var bucket: Array
 		if grid.has(cell):
@@ -122,6 +156,9 @@ func _assign_transforms(mmi: MultiMeshInstance3D, transforms: Array[Transform3D]
 		bucket.append(i)
 	_spatial[mmi] = grid
 	_positions[mmi] = positions
+	_scales[mmi] = scales
+	_metrics[mmi] = metrics
+	_heights[mmi] = heights
 
 
 ## Hunde bajo tierra las instancias a menos de `radius` de `world_pos`, para
@@ -300,6 +337,13 @@ func set_deposit_amount(amount: float) -> void:
 	deposit_amount = maxf(0.0, amount)
 
 
+## Define la metrica con la que la subclase describe cada yacimiento (rocas: el
+## radio en planta que ocupa la instancia). Se guarda por instancia al volcar
+## los transforms.
+func set_deposit_metric(metric: float) -> void:
+	deposit_metric = maxf(0.0, metric)
+
+
 ## True si la capa usa yacimientos con reserva (rocas).
 func uses_deposits() -> bool:
 	return deposit_amount > 0.0
@@ -307,7 +351,10 @@ func uses_deposits() -> bool:
 
 ## Yacimiento (roca) con reserva mas cercano dentro del radio, o {} si no hay.
 ## El diccionario devuelto es un handle para [method extract_deposit]:
-## {mmi: MultiMeshInstance3D, index: int, pos: Vector2, amount: float}.
+## {mmi: MultiMeshInstance3D, index: int, pos: Vector2, amount: float,
+##  scale: float, metric: float, yaw: float}. `scale` es el tamano uniforme de la
+## roca (1.0 = referencia), `metric` su radio en planta, `height` su cima sobre
+## el terreno y `yaw` su giro en Y (rad): la cantera se amolda a estos datos.
 func find_deposit(world_pos: Vector2, radius: float, variants: Array[int] = []) -> Dictionary:
 	if not _populated or deposit_amount <= 0.0:
 		return {}
@@ -337,8 +384,46 @@ func find_deposit(world_pos: Vector2, radius: float, variants: Array[int] = []) 
 				continue
 			if d2 < best_d:
 				best_d = d2
-				best = {"mmi": mmi, "index": i, "pos": p, "amount": reserves[i]}
+				best = {"mmi": mmi, "index": i, "pos": p, "amount": reserves[i],
+					"scale": instance_scale(mmi, i), "metric": instance_metric(mmi, i),
+					"height": instance_height(mmi, i), "yaw": instance_yaw(mmi, i)}
 	return best
+
+
+## Escala uniforme de una instancia (1.0 si aun no se conoce).
+func instance_scale(mmi: MultiMeshInstance3D, index: int) -> float:
+	var scales: PackedFloat32Array = _scales.get(mmi, PackedFloat32Array())
+	if index < 0 or index >= scales.size():
+		return 1.0
+	return scales[index]
+
+
+## Radio en planta (m) con el que la subclase describe la instancia, o 0.0 si
+## no se conoce.
+func instance_metric(mmi: MultiMeshInstance3D, index: int) -> float:
+	var metrics: PackedFloat32Array = _metrics.get(mmi, PackedFloat32Array())
+	if index < 0 or index >= metrics.size():
+		return 0.0
+	return metrics[index]
+
+
+## Altura maxima de la instancia sobre el suelo (m), o 0.0 si no se conoce.
+func instance_height(mmi: MultiMeshInstance3D, index: int) -> float:
+	var heights: PackedFloat32Array = _heights.get(mmi, PackedFloat32Array())
+	if index < 0 or index >= heights.size():
+		return 0.0
+	return heights[index]
+
+
+## Giro en Y (rad) de una instancia, para que el edificio que se apoya en ella
+## alinee su planta con la de la roca. 0.0 si no se conoce.
+func instance_yaw(mmi: MultiMeshInstance3D, index: int) -> float:
+	if mmi == null or not is_instance_valid(mmi):
+		return 0.0
+	var mm := mmi.multimesh
+	if mm == null or index < 0 or index >= mm.instance_count:
+		return 0.0
+	return mm.get_instance_transform(index).basis.get_euler().y
 
 
 ## True si el yacimiento sigue teniendo reserva y no esta agotado/retirado.
@@ -418,12 +503,12 @@ func _candidate_indices(positions: PackedVector2Array, grid: Dictionary,
 	return out
 
 
-## Instancia NO consumida mas cercana dentro del radio, o {} si no hay.
+## Instancia no consumida ni reservada mas cercana dentro del radio, o {} si no hay.
 ## Devuelve {mmi, index, pos} (sin reservas: vale para vegetacion y yacimientos).
 ## `exclude` es una lista de Vector2: se saltan las instancias a menos de
 ## `min_sep` de ellas (para que dos lenadores no elijan el mismo arbol).
 func find_nearest(world_pos: Vector2, radius: float, variants: Array[int] = [],
-		exclude: Array = [], min_sep := 0.0) -> Dictionary:
+		exclude: Array = [], min_sep := 0.0, reserve := false) -> Dictionary:
 	if not _populated:
 		return {}
 	var r2 := radius * radius
@@ -439,9 +524,10 @@ func find_nearest(world_pos: Vector2, radius: float, variants: Array[int] = [],
 		if positions.is_empty():
 			continue
 		var consumed: Dictionary = _consumed.get(mmi, {})
+		var reserved: Dictionary = _reserved.get(mmi, {})
 		var grid: Dictionary = _spatial.get(mmi, {})
 		for i in _candidate_indices(positions, grid, world_pos, radius):
-			if consumed.has(i):
+			if consumed.has(i) or reserved.has(i):
 				continue
 			var p := positions[i]
 			if not exclude.is_empty() and _excluded(p, exclude, min_sep):
@@ -454,6 +540,9 @@ func find_nearest(world_pos: Vector2, radius: float, variants: Array[int] = [],
 			if d2 < best_d:
 				best_d = d2
 				best = {"mmi": mmi, "index": i, "pos": p, "variant": vi}
+	if reserve and not best.is_empty():
+		if not reserve_instance(best["mmi"], int(best["index"])):
+			return {}
 	return best
 
 
@@ -482,6 +571,32 @@ func consume_instance(mmi: MultiMeshInstance3D, index: int) -> bool:
 	return true
 
 
+## Reserva un recurso para un consumidor mientras se dirige a el.
+func reserve_instance(mmi: MultiMeshInstance3D, index: int) -> bool:
+	if mmi == null or not is_instance_valid(mmi):
+		return false
+	var positions: PackedVector2Array = _positions.get(mmi, PackedVector2Array())
+	if index < 0 or index >= positions.size():
+		return false
+	if (_consumed.get(mmi, {}) as Dictionary).has(index):
+		return false
+	var reserved: Dictionary = _reserved.get(mmi, {})
+	if reserved.has(index):
+		return false
+	reserved[index] = true
+	_reserved[mmi] = reserved
+	return true
+
+
+## Libera una reserva que ya no va a consumirse.
+func release_instance(mmi: MultiMeshInstance3D, index: int) -> void:
+	if mmi == null:
+		return
+	var reserved: Dictionary = _reserved.get(mmi, {})
+	reserved.erase(index)
+	_reserved[mmi] = reserved
+
+
 ## "Revive" una instancia consumida en su sitio (replantado del aserradero),
 ## poniendole el transform nuevo. Evita agrandar el MultiMesh en runtime, que
 ## podia corromper el buffer y hacer desaparecer instancias. Devuelve si pudo.
@@ -500,6 +615,10 @@ func revive_instance(mmi: MultiMeshInstance3D, index: int, xform: Transform3D) -
 	mm.set_instance_transform(index, xform)
 	positions[index] = Vector2(xform.origin.x, xform.origin.z)
 	_positions[mmi] = positions
+	var scales: PackedFloat32Array = _scales.get(mmi, PackedFloat32Array())
+	if index < scales.size():
+		scales[index] = xform.basis.get_scale().x
+		_scales[mmi] = scales
 	consumed.erase(index)
 	return true
 
@@ -522,6 +641,9 @@ func spawn_instance(xform: Transform3D, variant: int) -> int:
 	var positions: PackedVector2Array = _positions.get(mmi, PackedVector2Array())
 	positions.append(Vector2(xform.origin.x, xform.origin.z))
 	_positions[mmi] = positions
+	var scales: PackedFloat32Array = _scales.get(mmi, PackedFloat32Array())
+	scales.append(xform.basis.get_scale().x)
+	_scales[mmi] = scales
 	var cell := Vector2i(int(floor(xform.origin.x / CLEAR_CELL)),
 		int(floor(xform.origin.z / CLEAR_CELL)))
 	var grid: Dictionary = _spatial.get(mmi, {})
@@ -592,6 +714,9 @@ func _mark_consumed(mmi: MultiMeshInstance3D, i: int) -> void:
 	if not _consumed.has(mmi):
 		_consumed[mmi] = set
 	set[i] = true
+	var reserved: Dictionary = _reserved.get(mmi, {})
+	reserved.erase(i)
+	_reserved[mmi] = reserved
 
 
 func _sink_if_near(mmi: MultiMeshInstance3D, i: int, world_pos: Vector2, r2: float) -> void:

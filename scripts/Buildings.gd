@@ -78,6 +78,19 @@ const DEMOLISH_REFUND := 0.5   # fraccion del coste que se devuelve
 ## Cada cuanto se intenta rebrotar recurso en el radio de un productor del
 ## entorno (aserradero/cantera). No restaura bajo edificios ni en agua.
 const REGROW_SECONDS := 30.0
+## Dimensionado del castillete de la cantera. La planta (donde caen las patas) y
+## la altura las fija BuildingMeshes.quarry a partir del radio real de la roca;
+## aqui solo se declaran los parametros que Buildings necesita para muestrear el
+## suelo bajo el pie y validar la pendiente. Deben coincidir con el mesh.
+const QUARRY_BASE_RADIUS := 0.58
+## Planta = radio de la roca * este margen: las patas quedan por fuera de la
+## piedra para que no choquen aunque sea redonda o alargada.
+const QUARRY_FOOT_MARGIN := 1.12
+## Radio en planta que se asume para una roca sin metrica conocida (m).
+const QUARRY_ROCK_RADIUS := 1.0
+## Pendiente maxima (m de desnivel por m) bajo el pie del castillete. Con mas
+## pendiente las patas quedarian colgando al vacio y no se permite colocarla.
+const QUARRY_MAX_SLOPE := 0.5
 
 # Cultivos que se pueden sembrar. Cada uno tiene su color, lo que tarda en
 # madurar y un multiplicador de rendimiento. La tasa sostenida de un cultivo
@@ -174,6 +187,9 @@ var _ghost_mat_ok: StandardMaterial3D
 var _ghost_mat_bad: StandardMaterial3D
 var _ghost_last_ground := Vector2(INF, INF)
 var _ghost_last_valid := false
+# Planta/ubicacion con la que se construyo cada castillete (nodo del modelo
+# -> clave del ajuste), para no reconstruirlo cada frame.
+var _quarry_fit: Dictionary = {}
 
 
 func _ready() -> void:
@@ -298,14 +314,21 @@ func resource_in_radius(rec: BuildingRecord) -> int:
 func find_tree(pos: Vector2, radius: float, exclude: Array = [], min_sep := 0.0) -> Dictionary:
 	if _veg == null or not _veg.is_populated():
 		return {}
-	return _veg.find_nearest(pos, radius, _node_variants(&"arboles"), exclude, min_sep)
+	return _veg.find_nearest(pos, radius, _node_variants(&"arboles"), exclude, min_sep, true)
 
 
 ## Retira un arbol concreto (handle de [method find_tree]).
-func consume_tree(handle: Dictionary) -> void:
+func consume_tree(handle: Dictionary) -> bool:
+	if _veg == null or handle.is_empty():
+		return false
+	return _veg.consume_instance(handle.get("mmi"), int(handle.get("index", -1)))
+
+
+## Libera un arbol reservado si se cancela una tarea antes de talarlo.
+func release_tree(handle: Dictionary) -> void:
 	if _veg == null or handle.is_empty():
 		return
-	_veg.consume_instance(handle.get("mmi"), int(handle.get("index", -1)))
+	_veg.release_instance(handle.get("mmi"), int(handle.get("index", -1)))
 
 
 ## Replanta un arbol en el hueco de uno talado (lo usa el sembrador). Reutiliza
@@ -412,15 +435,19 @@ func _finish_relocate(ground: Vector2, d: BuildingDef) -> void:
 	rec.yaw = _yaw
 	rec.deposit = dep
 	rec.resource_depleted = false
-	var base_h := _base_height(ground, d.footprint)
+	var base_h := _base_height(ground, _footprint_for(d, dep))
 	rec.node.position = Vector3(ground.x, base_h, ground.y)
 	for c in rec.node.get_children():
-		# Solo se gira el cuerpo (Node3D). El nodo tambien tiene un Timer de
-		# produccion y un NavigationObstacle3D, que no tienen `rotation`.
-		if c is Node3D and not (c is NavigationObstacle3D):
+		if c is NavigationObstacle3D:
+			(c as NavigationObstacle3D).radius = _building_clearance_radius(d, dep)
+		# Solo se gira el cuerpo (Node3D), no el Timer ni el obstaculo.
+		elif c is Node3D:
 			(c as Node3D).rotation.y = deg_to_rad(rec.yaw)
+			# La cantera se reamolda a la planta y altura de la nueva roca.
+			if d.requires_deposit:
+				_fit_quarry(c as Node3D, dep, ground, base_h, rec.yaw)
 	_add_to_grid(rec)
-	register_block(ground, d.footprint * 0.5)
+	register_block(ground, _building_clearance_radius(d, dep))
 	# Solo vegetacion: la nueva roca no se hunde.
 	vegetation_clear_requested.emit(ground, d.footprint * 0.75)
 	# Villagers y minimapa mueven su grupo/marcador tratandolo como demolido en
@@ -1032,10 +1059,15 @@ func _process(delta: float) -> void:
 			# local (no +Z como pensabamos). Empíricamente la puerta queda
 			# detras si solo calculamos atan2; este offset lo corrige.
 			_yaw = rad_to_deg(atan2(dir.x, dir.z)) + _facade_offset(_pending)
-	var base_h := _base_height(ground, d.footprint)
+	var g_dep := _snap_deposit(ground, d)
+	var base_h := _base_height(ground, _footprint_for(d, g_dep))
 	_ghost.position = Vector3(ground.x, base_h, ground.y)
 	# Solo gira el cuerpo.
 	_ghost_building.rotation = Vector3(0.0, deg_to_rad(_yaw), 0.0)
+	# La cantera se amolda al tamano de la roca que tiene debajo (fantasma). Se
+	# reconstruye solo cuando cambia la planta o el tamano, no en cada frame.
+	if d.requires_deposit:
+		_fit_quarry(_ghost_building, g_dep, ground, base_h, _yaw)
 	var valid := _is_valid(ground, _pending)
 	if valid == _ghost_last_valid and ground.is_equal_approx(_ghost_last_ground):
 		return
@@ -1043,6 +1075,99 @@ func _process(delta: float) -> void:
 	_ghost_last_ground = ground
 	var mat := _ghost_mat_ok if valid else _ghost_mat_bad
 	_update_ghost_material(mat)
+
+
+# Yacimiento (roca) mas cercano a `ground` para un edificio apoyado en el, o {}
+# si no aplica / no hay roca / la capa aun no esta poblada.
+func _snap_deposit(ground: Vector2, d: BuildingDef) -> Dictionary:
+	if d == null or not d.requires_deposit:
+		return {}
+	var layer := _node_layer(d.resource_node)
+	if layer == null or not layer.is_populated():
+		return {}
+	return layer.find_deposit(ground, d.footprint + 1.5, _node_variants(d.resource_node))
+
+
+# Amolda el castillete de la cantera a su roca. La planta y la altura salen del
+# radio real de la piedra (ver [method BuildingMeshes.quarry]); los grosores no
+# escalan, asi una roca grande no genera una torre desproporcionada. Se reemplaza
+# el cuerpo del modelo (que lleva el yaw), no su padre (que lleva la posicion),
+# para no tocar la altura de apoyo.
+#
+# `ground`/`base_h`/`yaw` describen donde y como se apoya el edificio: con ellos
+# se construye el Callable que alarga las patas y la escalera hasta el terreno.
+func _fit_quarry(body: Node3D, dep: Dictionary, ground := Vector2.ZERO, base_h := 0.0, yaw := 0.0) -> void:
+	if body == null:
+		return
+	var radius := QUARRY_ROCK_RADIUS
+	var rock_yaw := 0.0
+	var rock_top_y := radius * 0.75
+	if not dep.is_empty():
+		radius = float(dep.get("metric", 0.0))
+		if radius <= 0.0:
+			radius = QUARRY_ROCK_RADIUS
+		rock_yaw = float(dep.get("yaw", 0.0))
+		var deposit_pos: Vector2 = dep.get("pos", ground)
+		rock_top_y = Terrain.height_at(deposit_pos) - base_h + float(dep.get("height", 0.0))
+	# El fantasma pasa por aqui cada frame. Ademas de la roca y los giros, la clave
+	# incluye la ubicacion/altura cuando hay yacimiento: las patas dependen del
+	# terreno y deben rehacerse al reubicar, aunque la roca sea igual.
+	var fit_ground := ground if not dep.is_empty() else Vector2.ZERO
+	var fit_height := base_h if not dep.is_empty() else 0.0
+	var key := [fit_ground.x, fit_ground.y, fit_height, rock_yaw, radius, rock_top_y, roundf(yaw / 5.0)]
+	if _quarry_fit.get(body) == key:
+		return
+	_quarry_fit[body] = key
+	var ground_local := Callable()
+	if not dep.is_empty():
+		ground_local = _quarry_ground_local(ground, base_h, yaw, rock_yaw)
+	BuildingMeshes.rebuild_quarry(body, radius, rock_yaw, ground_local, rock_top_y)
+	body.scale = Vector3.ONE
+
+
+# Devuelve un Callable que transforma un punto del castillete a XZ de mundo con
+# las mismas bases de rotacion del cuerpo y de la planta para consultar Terrain.
+# El resultado se devuelve relativo a base_h.
+func _quarry_ground_local(ground: Vector2, base_h: float, yaw: float, rock_yaw: float) -> Callable:
+	var yaw_rad := deg_to_rad(yaw)
+	var body_basis := Basis(Vector3.UP, yaw_rad)
+	var rock_basis := Basis(Vector3.UP, rock_yaw)
+	return func(lx: float, lz: float) -> float:
+		# Usa exactamente la misma composicion de bases que los nodos (cuerpo *
+		# planta), evitando diferencias de signo entre yaw 3D y Vector2.rotated.
+		var world_offset := body_basis * (rock_basis * Vector3(lx, 0.0, lz))
+		var world_point := ground + Vector2(world_offset.x, world_offset.z)
+		return Terrain.height_at(world_point) - base_h
+
+
+# Radio en planta que ocupa el pie del castillete para un yacimiento dado (m).
+# Es el de la roca mas el margen del marco; sirve para muestrear el suelo bajo
+# las patas y no dejarlas colgando al vacio en una ladera.
+func _quarry_foot_radius(dep: Dictionary) -> float:
+	var radius := QUARRY_ROCK_RADIUS
+	if not dep.is_empty():
+		var m := float(dep.get("metric", 0.0))
+		if m > 0.0:
+			radius = m
+	# Debe coincidir con el `frame` de BuildingMeshes.quarry: patas por fuera de
+	# la roca con un margen.
+	return maxf(QUARRY_BASE_RADIUS, radius * QUARRY_FOOT_MARGIN)
+
+
+# Radio de colision que cubre todo el edificio. Las patas de cantera forman un
+# cuadrado: su radio circunscrito es mayor que el radio de su lado.
+func _building_clearance_radius(d: BuildingDef, dep: Dictionary = {}) -> float:
+	if d != null and d.requires_deposit:
+		return _quarry_foot_radius(dep) * sqrt(2.0) + 0.08
+	return d.footprint * 0.5 if d != null else 0.5
+
+
+# Diametro del solar que hay que muestrear para apoyar el edificio: la huella
+# normal o, en la cantera, el ancho real de sus patas segun la roca.
+func _footprint_for(d: BuildingDef, dep: Dictionary) -> float:
+	if d != null and d.requires_deposit:
+		return _quarry_foot_radius(dep) * 2.0
+	return d.footprint if d != null else 1.0
 
 
 func _update_ghost_material(m: Material) -> void:
@@ -1636,6 +1761,8 @@ func _place() -> void:
 		var biome_ok := _biome_matches(cls, d.biomes)
 		if d.requires_deposit and _available_at(d, ground) <= 0:
 			reason = "El %s necesita una roca debajo" % d.display_name
+		elif d.requires_deposit and Terrain.slope_at(ground, _quarry_foot_radius(_snap_deposit(ground, d))) > QUARRY_MAX_SLOPE:
+			reason = "El %s no cabe: la roca esta en una ladera" % d.display_name
 		elif not d.requires_deposit and not biome_ok:
 			reason = "Solo se puede construir en %s" % d.biomes_text()
 		elif not dev_free_build and not Economy.can_afford(d.cost):
@@ -1657,7 +1784,16 @@ func _place() -> void:
 		&"warehouse":
 			Economy.warehouse_count += 1
 			Economy.changed.emit()
-	var base_h := _base_height(ground, d.footprint)
+	# Acople: la cantera queda unida a la roca exacta sobre la que se ha apoyado.
+	var dep := {}
+	if d.requires_deposit:
+		var layer := _node_layer(d.resource_node)
+		if layer != null:
+			dep = layer.find_deposit(ground, 0.0, _node_variants(d.resource_node))
+	# El apoyo se muestrea sobre el solar. Para la cantera se usa la planta que
+	# ocupan sus patas (mas ancha que la huella): asi el pie no queda colgando al
+	# vacio si la roca esta junto a una ladera.
+	var base_h := _base_height(ground, _footprint_for(d, dep))
 	# Raiz sin rotar apoyada en el punto de apoyo; el cuerpo gira con el yaw.
 	var node := Node3D.new()
 	node.position = Vector3(ground.x, base_h, ground.y)
@@ -1669,22 +1805,22 @@ func _place() -> void:
 	# edificios si bloquean.
 	if not d.has_field:
 		var obstacle := NavigationObstacle3D.new()
-		obstacle.radius = d.footprint * 0.5
+		obstacle.radius = _building_clearance_radius(d, dep)
 		obstacle.height = 2.5
 		node.add_child(obstacle)
 	add_child(node)
 	var rec := BuildingRecord.new(_pending, ground, _yaw, node, dev_free_build)
 	_placed.append(rec)
-	# Acople: la cantera queda unida a la roca exacta sobre la que se ha apoyado.
+	# Acople: la cantera queda unida a la roca exacta sobre la que se ha apoyado
+	# y se amolda a su tamano.
 	if d.requires_deposit:
-		var layer := _node_layer(d.resource_node)
-		if layer != null:
-			rec.deposit = layer.find_deposit(ground, 0.0, _node_variants(d.resource_node))
+		rec.deposit = dep
+		_fit_quarry(body, dep, ground, base_h, _yaw)
 	# Spatial hash: edificios sin campo se indexan al colocar. Los edificios con
 	# campo se indexan en _confirm_field (tras tener los bounds del campo).
 	if not d.has_field:
 		_add_to_grid(rec)
-		register_block(ground, d.footprint * 0.5)
+		register_block(ground, _building_clearance_radius(d, dep))
 	_attach_production_timer(rec)
 	if d.crew_type == &"sawmill":
 		_spawn_crew(rec)
@@ -2016,15 +2152,24 @@ func _is_valid(pos: Vector2, type: StringName, ignore: BuildingRecord = null) ->
 	if not d.requires_deposit and not _biome_matches(Terrain.terrain_type(pos), d.biomes):
 		return false
 	# Acople: los edificios que se apoyan en un yacimiento necesitan una roca
-	# con reserva justo debajo. Si la capa aun no esta poblada no se puede
-	# comprobar, asi que se permite (el fantasma se valida al segundo siguiente).
+	# con reserva justo debajo. Se espera a que termine la generacion de la capa.
 	if d.requires_deposit:
 		var layer := _node_layer(d.resource_node)
-		if layer != null and layer.is_populated() \
-				and layer.count_resource(pos, d.footprint * 0.5 + 0.6, _node_variants(d.resource_node)) <= 0:
+		# No aceptar una cantera hasta que se conozcan los yacimientos: de lo
+		# contrario podria construirse durante el populate con un handle vacio.
+		if layer == null or not layer.is_populated():
+			return false
+		if layer.count_resource(pos, d.footprint * 0.5 + 0.6, _node_variants(d.resource_node)) <= 0:
+			return false
+		# El castillete se apoya en cuatro patas que sobresalen de la roca: si el
+		# suelo bajo ellas es una ladera fuerte, quedarian colgando al vacio.
+		var dep := _snap_deposit(pos, d)
+		if dep.is_empty() or Terrain.slope_at(pos, _quarry_foot_radius(dep)) > QUARRY_MAX_SLOPE:
 			return false
 	if not dev_free_build and not Economy.can_afford(d.cost):
 		return false
+	var placement_dep := _snap_deposit(pos, d)
+	var placement_radius := _building_clearance_radius(d, placement_dep)
 	# Spatial hash: solo revisa edificios en la celda (o adyacentes) a pos.
 	# 9 celdas * ~1 edificio/celda = ~10 checks en vez de N (cientos).
 	for b in _nearby(pos):
@@ -2036,14 +2181,13 @@ func _is_valid(pos: Vector2, type: StringName, ignore: BuildingRecord = null) ->
 		# 1. Separacion entre edificios: solo lo justo para no solaparse. Dos
 		# huellas cuadradas de lado footprint se tocan con los centros a
 		# (fa+fb)/2, asi que ese es el minimo (aproximacion circular inscrita).
-		var min_dist := d.footprint * 0.5 + other_def.footprint * 0.5
+		var min_dist := placement_radius + _building_clearance_radius(other_def, b.deposit)
 		if (b.pos - pos).length() < min_dist:
 			return false
 		# 2. Campo de una granja: no se puede construir encima. Se expande su
 		# AABB por media huella del edificio nuevo para no rozar la valla.
 		if b.field != null and b.field_min != b.field_max:
-			var pad := d.footprint * 0.5
-			if pos.x >= b.field_min.x - pad and pos.x <= b.field_max.x + pad \
-				and pos.y >= b.field_min.y - pad and pos.y <= b.field_max.y + pad:
+			if pos.x >= b.field_min.x - placement_radius and pos.x <= b.field_max.x + placement_radius \
+				and pos.y >= b.field_min.y - placement_radius and pos.y <= b.field_max.y + placement_radius:
 				return false
 	return true

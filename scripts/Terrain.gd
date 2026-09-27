@@ -993,6 +993,22 @@ func height_at(p: Vector2) -> float:
 	return TerrainUtils.bicubic(_height_px, _width, _height, fx, fy)
 
 
+## Pendiente local en `p`: maxima diferencia de altura entre el centro y un
+## anillo de radio `radius` (m), dividida por el radio. 0 = llano; valores altos
+## = ladera/cortado. Sirve para no colocar objetos de base plana (rocas,
+## edificios apoyados) en el filo de una montaña.
+func slope_at(p: Vector2, radius := 1.0) -> float:
+	if _width == 0:
+		return 0.0
+	var h0 := height_at(p)
+	var worst := 0.0
+	for i in 8:
+		var a := TAU * float(i) / 8.0
+		var h := height_at(p + Vector2(cos(a), sin(a)) * radius)
+		worst = maxf(worst, absf(h - h0))
+	return worst / maxf(radius, 0.001)
+
+
 func water_level_at(p: Vector2) -> float:
 	if _width == 0:
 		return 0.0

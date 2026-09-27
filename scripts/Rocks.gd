@@ -14,6 +14,12 @@ const MOUNTAIN_PROB := 0.02
 const FOOTHILL_HEIGHT := 2.6
 const SCALE_MIN := 0.6
 const SCALE_MAX := 1.2
+## Pendiente maxima (m de desnivel por m) donde puede nacer una roca. Las rocas
+## son cantos anchos de base plana: en una ladera fuerte quedarian medio en el
+## aire, colgando del filo. En montaña se mira a un radio mayor (la roca es
+## ancha) y en llano/bosque a uno menor.
+const MOUNTAIN_MAX_SLOPE := 0.55
+const LOWLAND_MAX_SLOPE := 0.7
 ## Piedra que rinde cada roca antes de agotarse (yacimiento). La cantera extrae
 ## de la roca mas cercana en su radio de trabajo.
 const DEPOSIT_STONE := 200.0
@@ -21,6 +27,15 @@ const DEPOSIT_STONE := 200.0
 const ROCK_COLOR := Color(0.52, 0.50, 0.47)
 const ROCK_COLOR_CRAG := Color(0.47, 0.45, 0.43)
 const ROCK_COLOR_SLAB := Color(0.55, 0.53, 0.49)
+
+## Radio en planta de la roca por variante (escala 1.0), en metros: el maximo de
+## sqrt(x^2+z^2) sobre los vertices de su malla. A diferencia de un valor medio,
+## esto garantiza que la planta del castillete libre la roca mas redonda o
+## alargada de esa variante, sin que las patas choquen con la piedra. Se rellena
+## al construir las mallas en _ready.
+var _variant_radius: PackedFloat32Array = []
+## Altura desde el terreno hasta la cima de cada variante, a escala 1.0.
+var _variant_top_height: PackedFloat32Array = []
 
 
 # Resultados que calcula el hilo, por variante. El resto de la maquinaria
@@ -33,10 +48,14 @@ var _slab_result: Array[Transform3D] = []
 func _ready() -> void:
 	# Cada roca es un yacimiento: rinde varias extracciones antes de hundirse.
 	set_deposit_amount(DEPOSIT_STONE)
+	# Radio en planta por variante (1.0 = aun sin calcular): la cantera lo usa
+	# para amoldar su castillete al tamano real de la piedra.
+	_variant_radius = PackedFloat32Array([1.0, 1.0, 1.0])
+	_variant_top_height = PackedFloat32Array([1.0, 1.0, 1.0])
 	_start_scatter([
-		_build_rock(_mesh_rng(201), 0.7, ROCK_COLOR),
-		_build_rock(_mesh_rng(202), 1.0, ROCK_COLOR_CRAG),
-		_build_rock(_mesh_rng(203), 0.45, ROCK_COLOR_SLAB),
+		_build_rock(_mesh_rng(201), 0.7, ROCK_COLOR, 0),
+		_build_rock(_mesh_rng(202), 1.0, ROCK_COLOR_CRAG, 1),
+		_build_rock(_mesh_rng(203), 0.45, ROCK_COLOR_SLAB, 2),
 	])
 
 
@@ -74,6 +93,11 @@ func _populate() -> void:
 			if prob > 0.0 and rng.randf() < prob:
 				if cls == Terrain.CLASS_FOREST:
 					h = Terrain.height_at(pos)
+				# Nada de rocas colgando del filo: la base tiene que ser plana.
+				var max_slope := MOUNTAIN_MAX_SLOPE if cls == Terrain.CLASS_ROCK else LOWLAND_MAX_SLOPE
+				if Terrain.slope_at(pos, _variant_radius[1]) > max_slope:
+					y += STEP
+					continue
 				var hgt := clampf((h - 3.0) / 4.0, 0.0, 1.0)
 				var s := lerpf(SCALE_MIN, SCALE_MAX, hgt) * rng.randf_range(0.8, 1.25)
 				var variant := rng.randi_range(0, 2)
@@ -96,9 +120,9 @@ func _populate() -> void:
 
 
 func _apply_populated() -> void:
-	_assign_transforms(_mmis[0], _boulder_result)
-	_assign_transforms(_mmis[1], _crag_result)
-	_assign_transforms(_mmis[2], _slab_result)
+	_assign_transforms(_mmis[0], _boulder_result, _variant_radius[0], _variant_top_height[0])
+	_assign_transforms(_mmis[1], _crag_result, _variant_radius[1], _variant_top_height[1])
+	_assign_transforms(_mmis[2], _slab_result, _variant_radius[2], _variant_top_height[2])
 	_populated = true
 	_flush_pending_clears()
 
@@ -137,7 +161,7 @@ func _icosa_faces() -> Array:
 
 # Boulder: icosaedro subdividido una vez (80 caras), vertices desplazados
 # radialmente y aplastado en Y -> canto anguloso pero redondeado, ancho y bajo.
-func _build_rock(rng: RandomNumberGenerator, sy: float, col: Color) -> ArrayMesh:
+func _build_rock(rng: RandomNumberGenerator, sy: float, col: Color, variant: int) -> ArrayMesh:
 	var verts := _icosa_verts()
 	var faces := _icosa_faces()
 	var cache := {}
@@ -166,10 +190,19 @@ func _build_rock(rng: RandomNumberGenerator, sy: float, col: Color) -> ArrayMesh
 
 	for i in range(verts.size()):
 		verts[i] = verts[i].normalized()
+	var max_r := 0.0
+	var max_y := 0.0
 	for i in range(verts.size()):
-		var d := rng.randf_range(1.0, 1.35)
+		var d := rng.randf_range(1.0, 1.18)
 		var v := verts[i] * d
 		verts[i] = Vector3(v.x, v.y * sy, v.z)
+		max_r = maxf(max_r, sqrt(v.x * v.x + v.z * v.z))
+		max_y = maxf(max_y, absf(v.y * sy))
+	if variant >= 0 and variant < _variant_radius.size():
+		_variant_radius[variant] = max_r
+		# La roca se desplaza hacia arriba sy unidades para hundir su mitad
+		# inferior; suma esa elevacion a la cima real de la malla.
+		_variant_top_height[variant] = sy + max_y
 
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)

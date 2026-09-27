@@ -86,6 +86,13 @@ func bind(buildings: Buildings, rec: BuildingRecord) -> void:
 	add_child(_rope)
 
 
+func _exit_tree() -> void:
+	# Demoler el aserradero puede cortar una tarea cuando la cuadrilla ya habia
+	# reservado un arbol; no dejar esa instancia bloqueada para siempre.
+	if _buildings != null:
+		_buildings.release_tree(_tree_handle)
+
+
 ## Villagers llama a esto cada tick de presencia para mantener la lista fresca.
 func set_workers(workers: Array) -> void:
 	_workers = workers
@@ -141,7 +148,12 @@ func _update_log_cycle(delta: float) -> void:
 			if _log != null:
 				_log.rotation.x = deg_to_rad(88.0 * t)
 			if _timer <= 0.0:
-				_buildings.consume_tree(_tree_handle)
+				if not _buildings.consume_tree(_tree_handle):
+					# El arbol pudo retirarse por una construccion mientras la
+					# cuadrilla iba hacia el. No producir ni replantar dos veces el
+					# mismo recurso.
+					_reset_log()
+					return
 				_plant_queue.append(_tree_handle)
 				_tree_handle = {}
 				_move_loggers(_stand_point())
@@ -163,11 +175,14 @@ func _update_log_cycle(delta: float) -> void:
 func _start_tree() -> void:
 	_active = _available_loggers()
 	if _active.is_empty():
+		_rec.resource_depleted = true
 		return
 	var tree := _buildings.find_tree(_rec.pos, _work_radius, [], TREE_SEPARATION)
 	if tree.is_empty():
+		_rec.resource_depleted = true
 		_active.clear()
 		return
+	_rec.resource_depleted = false
 	_tree_handle = tree
 	_tree_pos = tree["pos"]
 	_move_loggers(_tree_pos)
@@ -178,6 +193,7 @@ func _start_tree() -> void:
 
 func _reset_log() -> void:
 	_free_log()
+	_buildings.release_tree(_tree_handle)
 	_tree_handle = {}
 	_tree_pos = Vector2.ZERO
 	_active.clear()

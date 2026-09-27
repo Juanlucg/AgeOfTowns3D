@@ -59,6 +59,49 @@ static func apply_material_recursive(root: Node, mat: Material) -> void:
 	_apply_material_recursive(root, mat)
 
 
+## Reconstruye el castillete de una cantera ya creada con la planta y altura de su
+## roca. `body` es el nodo del modelo (el que lleva el yaw del edificio): vacia
+## sus hijos y mete un castillete nuevo, conservando el material y el giro.
+## `ground_local` es el Callable de apoyo del terreno (ver [method quarry]).
+static func rebuild_quarry(body: Node3D, rock_radius: float, rock_yaw: float,
+		ground_local: Callable = Callable(), rock_top_y := 1.1) -> void:
+	if body == null:
+		return
+	# Solo se conserva un material comun (el del fantasma). Si cada pieza tiene
+	# el suyo (cantera real: madera, viga, piedra), se deja null para que el
+	# castillete nuevo vuelva a usar su paleta.
+	var mat := _shared_override(body)
+	var rot := body.rotation.y
+	for child in body.get_children():
+		body.remove_child(child)
+		child.queue_free()
+	var fresh := quarry(mat, rock_radius, rock_yaw, ground_local, rock_top_y)
+	fresh.rotation.y = rot
+	body.add_child(fresh)
+
+
+# Material_override comun a todas las piezas del arbol, o null si no lo hay o
+# cada pieza tiene el suyo. Sirve para reconstruir un edificio sin perder el
+# material del fantasma.
+static func _shared_override(root: Node) -> Material:
+	var found: Material = null
+	var mixed := false
+	var stack: Array[Node] = [root]
+	while not stack.is_empty():
+		var n: Node = stack.pop_back()
+		if n != root and n is MeshInstance3D:
+			var o: Material = (n as MeshInstance3D).material_override
+			if o == null:
+				mixed = true
+			elif found == null:
+				found = o
+			elif found != o:
+				mixed = true
+		for c in n.get_children():
+			stack.append(c)
+	return null if mixed else found
+
+
 static func _apply_material_recursive(root: Node, mat: Material) -> void:
 	if root is MeshInstance3D:
 		(root as MeshInstance3D).material_override = mat
@@ -308,69 +351,169 @@ static func sawmill(mat: Material) -> Node3D:
 	return instance
 
 
-# Cantera: castillete de vigas de madera con escalera, montado ENCIMA de una
-# roca (el yacimiento). El armazon queda abierto en el centro para dejar ver la
-# piedra de la que extraen los aldeanos: jib con roldana y cuerda para subir los
-# bloques, escalera de mano y riostras en las esquinas.
-static func quarry(mat: Material) -> Node3D:
+# Cantera: castillete de madera arriostrado alrededor de la roca. Los postes
+# coinciden con las uniones del marco; las vigas laterales terminan contra ellos
+# en vez de quedar cortas o cruzarse fuera de las esquinas.
+#
+# `rock_radius` es el radio en planta de la roca (m). El castillete se dimensiona
+# para horquillarla: las patas se abren por fuera de ella y el marco superior
+# queda por encima, de modo que la roca queda encajada dentro del armazon y no
+# atravesada por las patas. `rock_yaw` gira la planta para que los cuatro postes
+# caigan por las esquinas de la roca (que es un icosaedro achatado) en vez de
+# sobre dos de sus caras.
+#
+# `rock_radius` es el radio en planta real de la roca (m): fija la planta del
+# castillete (patas por fuera de la piedra) y una altura suficiente para que el
+# marco la libre por encima. Los grosores (vigas, patas, escalera) NO escalan
+# con la roca: asi una piedra grande no genera una torre desproporcionada.
+#
+# `ground_local` es un Callable opcional `(local_x, local_z) -> float`: devuelve
+# la altura del suelo EN COORDENADAS LOCALES del modelo bajo un punto XZ dado.
+# Con el, las patas y la escalera se alargan hacia abajo hasta clavar su pie en
+# el terreno (en una ladera el lado de abajo quedaria colgando). Sin el, todo
+# acaba en y=0.
+static func quarry(mat: Material, rock_radius := 0.58, rock_yaw := 0.0,
+		ground_local: Callable = Callable(), rock_top_y := 1.1) -> Node3D:
 	var n := Node3D.new()
 	var wood := mat if mat != null else _mat(WOOD_COLOR)
 	var beam := mat if mat != null else _mat(TIMBER_COLOR)
 	var stone := mat if mat != null else _mat(STONE_COLOR)
 	var rope := mat if mat != null else _mat(ROPE_COLOR)
+	var ground_y := func(lx: float, lz: float) -> float:
+		if ground_local.is_valid():
+			return float(ground_local.call(lx, lz))
+		return 0.0
 
-	# Cuatro patas en ligera piramide: dejan hueco en el centro para la roca.
-	var h := 1.45
+	# Planta del castillete en XZ: pivote base + rotacion propia (independiente
+	# del yaw del edificio, que va en la raiz del cuerpo). gira la planta para
+	# que los cuatro postes caigan por las esquinas de la roca (icosaedro
+	# achatado) y no sobre dos de sus caras.
+	var base := Node3D.new()
+	base.rotation.y = rock_yaw
+	n.add_child(base)
+
+	# Planta: el lado del marco deja holgura alrededor de la piedra. Los postes
+	# verticales van exactamente en los vertices y continuan unos centimetros por
+	# encima de las vigas para que la union se lea claramente.
+	var frame := maxf(0.58, rock_radius * 1.12)
+	# La viga queda apenas por encima de la cima medida de esta roca, en vez de
+	# escalar la altura con el radio y dejar un castillete desproporcionado.
+	var h := maxf(1.1, rock_top_y + 0.12)
+	var post_size := 0.14
+	var beam_size := 0.12
+	var post_half := post_size * 0.5
+	# Los extremos entran un poco en los postes: solapan la madera y no dejan
+	# juntas abiertas por tolerancias de coma flotante.
+	var beam_span := frame * 2.0
+	var lower_y := minf(0.72, h * 0.42)
+	var top_beam_y := h - 0.04
+	var lashing := _box(Vector3(post_size + 0.025, 0.045, post_size + 0.025))
+
+	# Postes principales. Cada uno apoya bajo el mismo punto donde se encuentran
+	# las dos vigas del marco; las longitudes siguen el desnivel del terreno.
 	for sx in [-1.0, 1.0]:
 		for sz in [-1.0, 1.0]:
-			var leg := _part(_box(Vector3(0.09, h, 0.09)), wood,
-				Vector3(sx * 0.52, h * 0.5, sz * 0.52))
-			leg.rotate_x(-sz * 0.10)
-			leg.rotate_z(sx * 0.10)
-			n.add_child(leg)
+			var foot_y := minf(0.0, ground_y.call(sx * frame, sz * frame))
+			if ground_local.is_valid():
+				# Entierra la zapata un poco en el terreno para que las variaciones
+				# de muestreo no dejen una rendija visible bajo el apoyo.
+				foot_y -= 0.08
+			# Zapata de piedra en cada apoyo. El poste se solapa con ella y su base
+			# queda ligeramente enterrada cuando se conoce la altura del terreno.
+			base.add_child(_part(_box(Vector3(0.22, 0.12, 0.22)), stone,
+				Vector3(sx * frame, foot_y + 0.06, sz * frame)))
+			var foot_pos := Vector3(sx * frame, foot_y + 0.08, sz * frame)
+			var top_pos := Vector3(sx * frame, h + 0.06, sz * frame)
+			base.add_child(_beam_between(foot_pos, top_pos, post_size, wood))
+			# Atadura justo bajo cada nudo para que se lea la union entre poste y
+			# marco, en vez de parecer cuatro piezas que solo se rozan.
+			base.add_child(_part(lashing, rope,
+				Vector3(sx * frame, top_beam_y - 0.095, sz * frame)))
 
-	# Marco superior (cuatro vigas).
-	var beam_z := _box(Vector3(0.08, 0.08, 1.0))
-	n.add_child(_part(beam_z, beam, Vector3(-0.46, h, 0)))
-	n.add_child(_part(beam_z, beam, Vector3(0.46, h, 0)))
-	var beam_x := _box(Vector3(1.0, 0.08, 0.08))
-	n.add_child(_part(beam_x, beam, Vector3(0, h, -0.46)))
-	n.add_child(_part(beam_x, beam, Vector3(0, h, 0.46)))
-
-	# Tornapuntas cruzadas en las dos caras laterales.
+	# Marco superior e intermedio. Las piezas terminan en la cara interior de los
+	# postes, sin atravesar sus centros ni dejar huecos en los extremos.
+	for sz in [-1.0, 1.0]:
+		var top_x := _box(Vector3(beam_span, beam_size, beam_size))
+		base.add_child(_part(top_x, beam, Vector3(0.0, top_beam_y, sz * frame)))
+		var tie_x := _box(Vector3(beam_span, 0.10, 0.10))
+		base.add_child(_part(tie_x, wood, Vector3(0.0, lower_y, sz * frame)))
 	for sx in [-1.0, 1.0]:
-		var brace := _part(_box(Vector3(0.06, 1.25, 0.06)), wood,
-			Vector3(sx * 0.50, 0.72, -0.50))
-		brace.rotate_z(sx * 0.55)
-		n.add_child(brace)
+		var top_z := _box(Vector3(beam_size, beam_size, beam_span))
+		base.add_child(_part(top_z, beam, Vector3(sx * frame, top_beam_y, 0.0)))
+		var tie_z := _box(Vector3(0.10, 0.10, beam_span))
+		base.add_child(_part(tie_z, wood, Vector3(sx * frame, lower_y, 0.0)))
 
-	# Viga voladiza (jib) con roldana y cuerda: sube los bloques de piedra.
-	var jib := _part(_box(Vector3(1.15, 0.09, 0.09)), beam, Vector3(0.18, h + 0.12, 0.0))
-	jib.rotate_z(0.14)
-	n.add_child(jib)
-	var wheel := _part(_cylinder(0.09, 0.09, 0.05, 10), stone, Vector3(0.72, h + 0.20, 0))
-	wheel.rotate_z(PI * 0.5)
-	n.add_child(wheel)
-	n.add_child(_part(_box(Vector3(0.025, 0.85, 0.025)), rope, Vector3(0.72, h - 0.24, 0)))
-	n.add_child(_part(_box(Vector3(0.22, 0.18, 0.22)), stone, Vector3(0.72, h - 0.72, 0)))
+	# Riostras de esquina: forman triangulos entre los montantes y los dos
+	# cinturones, y evitan el aspecto de cuatro patas sueltas.
+	for sx in [-1.0, 1.0]:
+		for sz in [-1.0, 1.0]:
+			var corner_x: float = sx * (frame - post_half)
+			var corner_z: float = sz * (frame - post_half)
+			var brace_low := lower_y + 0.08
+			var brace_high := h - 0.16
+			base.add_child(_beam_between(
+				Vector3(corner_x, brace_low, sz * frame),
+				Vector3(sx * (frame - 0.42), brace_high, sz * frame), 0.075, wood))
+			base.add_child(_beam_between(
+				Vector3(sx * frame, brace_low, corner_z),
+				Vector3(sx * frame, brace_high, sz * (frame - 0.42)), 0.075, wood))
 
-	# Escalera de mano apoyada en el castillete.
-	var ladder := Node3D.new()
-	var rail := _box(Vector3(0.05, 1.5, 0.05))
-	ladder.add_child(_part(rail, wood, Vector3(-0.17, 0.75, 0)))
-	ladder.add_child(_part(rail, wood, Vector3(0.17, 0.75, 0)))
-	var rung := _box(Vector3(0.38, 0.05, 0.05))
-	for i in 6:
-		ladder.add_child(_part(rung, wood, Vector3(0, 0.18 + float(i) * 0.24, 0)))
-	ladder.position = Vector3(0.52, 0.0, 0.62)
-	ladder.rotate_x(-0.18)
-	n.add_child(ladder)
+	# Pequeña grua apoyada en el larguero trasero del marco. El mastil y sus
+	# diagonales nacen sobre esa viga (no en el hueco central), y triangulan el
+	# brazo antes de que este vuele sobre la piedra.
+	var hoist_y := h + 0.42
+	var mast_z := minf(0.22, frame * 0.3)
+	for sz in [-1.0, 1.0]:
+		base.add_child(_beam_between(Vector3(-frame, top_beam_y, sz * mast_z),
+			Vector3(-frame, hoist_y, sz * mast_z), 0.09, wood))
+	base.add_child(_part(_box(Vector3(0.10, 0.09, mast_z * 2.0 + 0.06)), beam,
+		Vector3(-frame, hoist_y, 0.0)))
+	var tip_x := frame + 0.58
+	base.add_child(_beam_between(Vector3(-frame - 0.10, hoist_y + 0.06, 0.0),
+		Vector3(tip_x + 0.10, hoist_y + 0.06, 0.0), 0.10, beam))
+	for sz in [-1.0, 1.0]:
+		base.add_child(_beam_between(Vector3(-frame, top_beam_y, sz * mast_z),
+			Vector3(0.18, hoist_y + 0.06, sz * mast_z), 0.075, wood))
+	var wheel_y := hoist_y - 0.08
+	var wheel := _part(_cylinder(0.10, 0.10, 0.07, 12), stone,
+		Vector3(tip_x, wheel_y, 0.0))
+	wheel.rotate_x(PI * 0.5)
+	base.add_child(wheel)
+	var load_y := maxf(0.24, h * 0.42)
+	base.add_child(_beam_between(Vector3(tip_x, wheel_y - 0.06, 0.0),
+		Vector3(tip_x, load_y + 0.10, 0.0), 0.025, rope))
+	base.add_child(_part(_box(Vector3(0.22, 0.20, 0.22)), stone,
+		Vector3(tip_x, load_y, 0.0)))
 
-	# Bloques de piedra ya cortados al pie.
+	# Escalera inclinada en el lateral delantero. Se definen los extremos de cada
+	# larguero directamente para que ambos pies apoyen en el terreno y la cabeza
+	# llegue al marco, sin depender de una rotacion que los separe de las vigas.
+	var ladder_bottom := Vector3(0.0,
+		minf(0.0, ground_y.call(0.0, frame + 0.28)), frame + 0.28)
+	var ladder_top := Vector3(0.0, h + 0.03, frame - 0.07)
+	for x_offset in [-0.19, 0.19]:
+		base.add_child(_beam_between(
+			ladder_bottom + Vector3(x_offset, 0.0, 0.0),
+			ladder_top + Vector3(x_offset, 0.0, 0.0), 0.055, wood))
+	var ladder_len := ladder_bottom.distance_to(ladder_top)
+	var rung_count := maxi(3, int(ladder_len / 0.24))
+	for i in range(1, rung_count):
+		var t := float(i) / float(rung_count)
+		var center := ladder_bottom.lerp(ladder_top, t)
+		base.add_child(_beam_between(center + Vector3(-0.19, 0.0, 0.0),
+			center + Vector3(0.19, 0.0, 0.0), 0.045, wood))
+
+	# Unos bloques cortados descansan sobre el terreno junto a la escalera.
 	var block := _box(Vector3(0.24, 0.16, 0.20))
-	n.add_child(_part(block, stone, Vector3(-0.55, 0.08, 0.52)))
-	n.add_child(_part(block, stone, Vector3(-0.55, 0.24, 0.52)))
-	n.add_child(_part(block, stone, Vector3(-0.30, 0.08, 0.56)))
+	var bx := -frame - 0.22
+	var bz := frame + 0.22
+	var block_ground := minf(0.0, ground_y.call(bx, bz))
+	base.add_child(_part(block, stone, Vector3(bx, block_ground + 0.08, bz)))
+	base.add_child(_part(block, stone, Vector3(bx, block_ground + 0.24, bz)))
+	var bx2 := bx + 0.25
+	var bz2 := bz + 0.04
+	var block_ground2 := minf(0.0, ground_y.call(bx2, bz2))
+	base.add_child(_part(block, stone, Vector3(bx2, block_ground2 + 0.08, bz2)))
 	return n
 
 
@@ -537,6 +680,28 @@ static func zone_disc(radius: float, color: Color) -> MeshInstance3D:
 
 
 # --- helpers internos (no son parte de la API publica) ---
+
+# Base ortonormal cuyo eje Y local apunta en `dir`: sirve para orientar una caja
+# (poste, riostra, larguero) a lo largo de una direccion cualquiera.
+static func _basis_from_dir(dir: Vector3) -> Basis:
+	var y := dir.normalized()
+	var x := Vector3.UP.cross(y)
+	if x.length_squared() < 1e-6:
+		x = Vector3.RIGHT
+	x = x.normalized()
+	var z := x.cross(y).normalized()
+	return Basis(x, y, z)
+
+
+static func _beam_between(a: Vector3, b: Vector3, thickness: float, mat: Material) -> MeshInstance3D:
+	var delta := b - a
+	var length := maxf(delta.length(), 0.001)
+	var mesh := BoxMesh.new()
+	mesh.size = Vector3(thickness, length, thickness)
+	var beam := _part(mesh, mat, (a + b) * 0.5)
+	beam.transform = Transform3D(_basis_from_dir(delta), (a + b) * 0.5)
+	return beam
+
 
 static func _part(m: Mesh, mat: Material, pos: Vector3) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
